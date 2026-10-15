@@ -1,5 +1,7 @@
 # Godot MCP v0
 
+> **Superseded (2026-10-15):** v0 is replaced by [addon-mcp-v1.md](addon-mcp-v1.md). The Godot editor addon becomes the only MCP server and takes over headless run, import and build. Slices 3–5 will not be built in TypeScript. The Bun server from slices 1–2 stays usable until the addon reaches parity (v1 slice 9), then retires; `tests/editor` remains as a dev-only conformance lane.
+
 ## Goal
 
 A local stdio MCP server, written in Bun and TypeScript, that lets Claude Code agents in `lagrange-protocol` do four things with a Godot 4.7 .NET project:
