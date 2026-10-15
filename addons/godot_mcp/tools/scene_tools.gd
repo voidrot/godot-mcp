@@ -184,8 +184,9 @@ func save_scene(_arguments: Dictionary, _request: Request) -> Variant:
 	var err := EditorInterface.save_scene()
 	# save_scene returns OK even when the write failed, so the unsaved list and the log decide too.
 	var errors := _log.errors_since(cursor).filter(func(entry: Dictionary) -> bool: return not _is_thumbnail_noise(entry))
-	if err != OK or path in EditorInterface.get_unsaved_scenes() or not errors.is_empty():
-		var detail: String = errors[0]["message"] if not errors.is_empty() else error_string(err)
+	var overflowed := _log.evicted_since(cursor)
+	if err != OK or path in EditorInterface.get_unsaved_scenes() or not errors.is_empty() or overflowed:
+		var detail: String = "the editor log overflowed during the save; see get_editor_log" if overflowed else (errors[0]["message"] if not errors.is_empty() else error_string(err))
 		return ToolError.fail("SAVE_FAILED", "Could not save %s: %s" % [path, detail])
 	return {"path": path}
 

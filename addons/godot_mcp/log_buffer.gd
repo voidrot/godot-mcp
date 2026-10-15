@@ -11,6 +11,9 @@ var _mutex := Mutex.new()
 var _entries: Array[Dictionary] = []
 # Sequence number of the newest entry; entries are numbered from 1.
 var _seq := 0
+# Entries ever logged at each level, which the ring's eviction can't lower.
+var _errors := 0
+var _warnings := 0
 
 
 func _log_message(message: String, error: bool) -> void:
@@ -30,6 +33,10 @@ func _log_error(function: String, file: String, line: int, code: String, rationa
 func _append(entry: Dictionary) -> void:
 	_mutex.lock()
 	_seq += 1
+	if entry["level"] == "error":
+		_errors += 1
+	elif entry["level"] == "warning":
+		_warnings += 1
 	entry["seq"] = _seq
 	_entries.append(entry)
 	if _entries.size() > MAX_ENTRIES:
@@ -45,12 +52,28 @@ func seq() -> int:
 	return newest
 
 
-# Error-level entries logged after `cursor` (from seq()) that are still in the ring.
-func errors_since(cursor: int) -> Array[Dictionary]:
+# {errors, warnings}: how many entries were ever logged, for counting a span by difference.
+func totals() -> Dictionary:
+	_mutex.lock()
+	var out := {"errors": _errors, "warnings": _warnings}
+	_mutex.unlock()
+	return out
+
+
+# True when the ring has dropped entries logged after `cursor`, so errors_since may be missing some.
+func evicted_since(cursor: int) -> bool:
+	_mutex.lock()
+	var oldest: int = _entries[0]["seq"] if not _entries.is_empty() else _seq + 1
+	_mutex.unlock()
+	return oldest > cursor + 1
+
+
+# Error-level entries (and warnings, if asked) logged after `cursor` (from seq()) that are still in the ring.
+func errors_since(cursor: int, with_warnings := false) -> Array[Dictionary]:
 	_mutex.lock()
 	var out: Array[Dictionary] = []
 	for entry in _entries:
-		if entry["seq"] > cursor and entry["level"] == "error":
+		if entry["seq"] > cursor and (entry["level"] == "error" or (with_warnings and entry["level"] == "warning")):
 			out.append(entry.duplicate())
 	_mutex.unlock()
 	return out

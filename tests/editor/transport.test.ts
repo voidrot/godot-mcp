@@ -143,6 +143,16 @@ describe("JSON-RPC", () => {
     expect(rpcError(res.body).code).toBe(-32600);
   });
 
+  test("a string id over 256 characters gets -32600; 256 is served", async () => {
+    const request = (id: string) =>
+      JSON.stringify({ jsonrpc: "2.0", id, method: "ping" });
+    const long = await send({ body: request("x".repeat(257)) });
+    expect(long.status).toBe(400);
+    expect(rpcError(long.body).code).toBe(-32600);
+    const edge = await send({ body: request("x".repeat(256)) });
+    expect(edge.status).toBe(200);
+  });
+
   test("a missing jsonrpc gets -32600", async () => {
     const res = await send({ body: JSON.stringify({ id: 1, method: "ping" }) });
     expect(res.status).toBe(400);

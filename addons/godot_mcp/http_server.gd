@@ -34,7 +34,7 @@ class Peer:
 	var body_start := 0
 	var body_length := 0
 	var headers := {}
-	# Set once the handler starts.
+	# Created when the body is complete.
 	var request: Request = null
 	var outbound := PackedByteArray()
 	var sent := 0
@@ -48,12 +48,18 @@ var _token: PackedByteArray
 # func(body: PackedByteArray, headers: Dictionary, request: Request) -> [status: int, body: String];
 # may be a coroutine, which must return soon after request.cancelled is set.
 var _handler: Callable
+# Optional. func(body: PackedByteArray, request: Request) runs when a body is complete, before the
+# request waits for the FIFO; func(request: Request) runs when the request leaves, answered or dropped.
+var _ingress: Callable
+var _done: Callable
 var _peers: Array[Peer] = []
 var _queue: Array[Peer] = []
 var _active: Peer = null
 
 
-func _init(tcp: TCPServer, port: int, token: String, handler: Callable) -> void:
+func _init(tcp: TCPServer, port: int, token: String, handler: Callable, ingress := Callable(), done := Callable()) -> void:
+	_ingress = ingress
+	_done = done
 	_tcp = tcp
 	_port = port
 	_token = token.to_utf8_buffer()
@@ -83,8 +89,24 @@ func poll() -> void:
 	# _process re-enters while a handler blocks, so iterate a copy and start no dispatch while one is active.
 	for peer in _peers.duplicate():
 		_poll_peer(peer)
+	_apply_budget()
 	while _active == null and not _queue.is_empty():
 		_run(_queue.pop_front())
+		_apply_budget()
+
+
+# Applies what the running handler asked of its Request: a longer execution budget, and handing the
+# FIFO to the next request (a job that touches only its own child, D37). A released handler is still
+# bounded by its deadline and cancelled when its peer goes.
+func _apply_budget() -> void:
+	if _active == null:
+		return
+	var request := _active.request
+	if request.budget_ms > 0:
+		_active.deadline = Time.get_ticks_msec() + request.budget_ms
+		request.budget_ms = 0
+	if request.detached:
+		_active = null
 
 
 func _poll_peer(peer: Peer) -> void:
@@ -103,6 +125,9 @@ func _poll_peer(peer: Peer) -> void:
 				peer.unread = false
 				peer.state = State.QUEUED
 				peer.deadline = now + EXECUTION_MS
+				peer.request = Request.new()
+				if _ingress.is_valid():
+					_ingress.call(peer.inbound.slice(peer.body_start, peer.body_start + peer.body_length), peer.request)
 				_queue.append(peer)
 			elif peer.state in [State.HEAD, State.BODY] and now > peer.deadline:
 				_reject(peer, 408, "Request not received within %d ms" % INGRESS_MS)
@@ -220,11 +245,11 @@ func _check(peer: Peer, method: String, target: String) -> void:
 
 func _run(peer: Peer) -> void:
 	_active = peer
-	peer.request = Request.new()
 	var body := peer.inbound.slice(peer.body_start, peer.body_start + peer.body_length)
 	var response: Variant = await _handler.call(body, peer.headers, peer.request)
 	if _active == peer:
 		_active = null
+	_finish(peer)
 	# Answered already if the execution budget ran out, or gone if the client left.
 	if not _peers.has(peer) or peer.state != State.QUEUED:
 		return
@@ -272,8 +297,14 @@ func _cancel(peer: Peer) -> void:
 		peer.request.cancelled = true
 
 
+func _finish(peer: Peer) -> void:
+	if peer.request != null and _done.is_valid():
+		_done.call(peer.request)
+
+
 func _close(peer: Peer) -> void:
 	_cancel(peer)
+	_finish(peer)
 	peer.tcp.disconnect_from_host()
 	_peers.erase(peer)
 	_queue.erase(peer)

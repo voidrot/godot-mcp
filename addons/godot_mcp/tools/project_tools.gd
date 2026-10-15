@@ -12,10 +12,13 @@ const PROTECTED_PREFIXES: Array[String] = ["editor/", "editor_plugins/", "godot_
 static var NAME_PATTERN := RegEx.create_from_string("^[A-Za-z0-9_]+(?:/[A-Za-z0-9_]+)+\\z")
 
 var _addon_version: String
+# func() -> bool: whether a job (run_headless, import_assets) is running.
+var _job_active: Callable
 
 
-func _init(addon_version: String) -> void:
+func _init(addon_version: String, job_active: Callable) -> void:
 	_addon_version = addon_version
+	_job_active = job_active
 
 
 func tools() -> Array[Dictionary]:
@@ -81,7 +84,8 @@ func get_project_info(_arguments: Dictionary, _request: Request) -> Variant:
 		"openScenes": Array(EditorInterface.get_open_scenes()),
 		"unsavedScenes": Array(EditorInterface.get_unsaved_scenes()),
 		"playingScene": playing if playing != "" else null,
-		"scanning": EditorInterface.get_resource_filesystem().is_scanning(),
+		"scanning": EditorInterface.get_resource_filesystem().is_scanning() or EditorInterface.get_resource_filesystem().is_importing(),
+		"jobActive": _job_active.call(),
 	}
 
 

@@ -195,7 +195,12 @@ func _store(path: String, bytes: PackedByteArray) -> Error:
 	var stored := file.store_buffer(bytes)
 	var err := file.get_error()
 	file.close()
-	return err if err != OK else (OK if stored else ERR_FILE_CANT_WRITE)
+	if err != OK:
+		return err
+	if not stored:
+		return ERR_FILE_CANT_WRITE
+	# Godot buffers small writes until close, and close ignores a failed flush, so verify what landed.
+	return OK if FileAccess.get_file_as_bytes(path) == bytes else ERR_FILE_CORRUPT
 
 
 # Loads the file with CACHE_MODE_IGNORE, which also reloads an already loaded Script in place, and
@@ -215,6 +220,8 @@ func _diagnose(path: String) -> Array[Dictionary]:
 		else:
 			item["lineUnknown"] = true
 		out.append(item)
+	if _log.evicted_since(cursor):
+		out.append({"message": "The editor log overflowed while the script loaded, so its errors may be missing; see get_editor_log", "lineUnknown": true})
 	if loaded == null and out.is_empty():
 		out.append({"message": "The script failed to load; see get_editor_log", "lineUnknown": true})
 	return out

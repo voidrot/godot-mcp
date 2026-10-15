@@ -8,6 +8,9 @@ const Schema := preload("schema.gd")
 
 const SUPPORTED_VERSIONS: Array[String] = ["2025-11-25", "2025-06-18", "2025-03-26"]
 const MAX_RESPONSE_BYTES := 4 * 1024 * 1024
+const MAX_ID_CHARS := 256
+const RECENT_MS := 60000
+const MAX_RECENT_IDS := 10000
 # Control characters JSON.stringify leaves raw; \b \t \n \f \r (and \v, see _stringify) it escapes.
 static var _CONTROL := RegEx.create_from_string("[\\x01-\\x07\\x0e-\\x1f]")
 static var _VT_ESCAPE := RegEx.create_from_string("(?<!\\\\)((?:\\\\\\\\)*)\\\\v")
@@ -20,6 +23,10 @@ var _version: String
 var _providers: Array
 # name -> {definition: Dictionary, handler: Callable}
 var _tools := {}
+# JSON-RPC id -> the Requests in flight under it, from the moment each is queued.
+var _in_flight := {}
+# JSON-RPC id -> when a request under it last finished, oldest first.
+var _recent := {}
 
 
 func _init(version: String, providers: Array) -> void:
@@ -49,9 +56,9 @@ func handle(body: PackedByteArray, headers: Dictionary, request: Request) -> Arr
 	var id: Variant = message.get("id")
 	if message.has("id") and not (id is String or id is float):
 		return [400, _error(null, -32600, "Invalid Request: id must be a string or a number")]
-	# JSON numbers parse as floats; echo whole ids as ints so the reply carries "id":1, not 1.0.
-	if id is float and absf(id) <= 9007199254740991.0 and id == floorf(id):
-		id = int(id)
+	if id is String and id.length() > MAX_ID_CHARS:
+		return [400, _error(null, -32600, "Invalid Request: id is longer than %d characters" % MAX_ID_CHARS)]
+	id = _wire_id(id)
 	if not message.get("jsonrpc") is String or message["jsonrpc"] != "2.0":
 		return [400, _error(id, -32600, "Invalid Request: jsonrpc must be \"2.0\"")]
 	var requested: String = headers.get("mcp-protocol-version", "")
@@ -79,6 +86,60 @@ func handle(body: PackedByteArray, headers: Dictionary, request: Request) -> Arr
 	if text.to_utf8_buffer().size() > MAX_RESPONSE_BYTES:
 		return [200, _error(id, -32603, "Response exceeds %d bytes" % MAX_RESPONSE_BYTES)]
 	return [200, text]
+
+
+# Called by the transport as soon as a body is complete, before the request waits in the FIFO. Records
+# a request's id so a cancel can find it, and applies notifications/cancelled at once: it touches no
+# editor state, so it must not wait behind the request it targets.
+func ingress(body: PackedByteArray, request: Request) -> void:
+	var json := JSON.new()
+	if json.parse(body.get_string_from_utf8()) != OK or not json.data is Dictionary:
+		return
+	var message: Dictionary = json.data
+	if not message.get("method") is String:
+		return
+	var id: Variant = message.get("id")
+	if id is float or (id is String and id.length() <= MAX_ID_CHARS):
+		request.rpc_id = _wire_id(id)
+		_in_flight.get_or_add(request.rpc_id, []).append(request)
+	elif message["method"] == "notifications/cancelled" and message.get("params") is Dictionary:
+		_cancel_in_flight(message["params"].get("requestId"))
+
+
+# Called when a request leaves the transport (answered or dropped). Its id stays suspect for a while.
+func done(request: Request) -> void:
+	var id: Variant = request.rpc_id
+	if id == null:
+		return
+	request.rpc_id = null
+	var peers: Array = _in_flight.get(id, [])
+	peers.erase(request)
+	if peers.is_empty():
+		_in_flight.erase(id)
+	_recent.erase(id)
+	_recent[id] = Time.get_ticks_msec()
+	if _recent.size() > MAX_RECENT_IDS:
+		_recent.erase(_recent.keys()[0])
+
+
+# notifications/cancelled: a client that gives up on a request sends this on a new connection, since
+# the server keeps no session. Ids are only unique per client, so the cancel is ambiguous, and applied
+# to nothing, when several requests are in flight under the id or one finished under it within
+# RECENT_MS (a stale cancel must not hit another client's new request). Any token holder can cancel
+# any request (D33).
+func _cancel_in_flight(request_id: Variant) -> void:
+	var id: Variant = _wire_id(request_id)
+	var peers: Array = _in_flight.get(id, [])
+	var finished: int = _recent.get(id, -RECENT_MS)
+	if peers.size() == 1 and Time.get_ticks_msec() - finished >= RECENT_MS:
+		peers[0].cancelled = true
+
+
+# JSON numbers parse as floats; whole ids become ints, so a reply carries "id":1, not 1.0.
+static func _wire_id(id: Variant) -> Variant:
+	if id is float and absf(id) <= 9007199254740991.0 and id == floorf(id):
+		return int(id)
+	return id
 
 
 # Returns {result} or {error: {code, message}}.

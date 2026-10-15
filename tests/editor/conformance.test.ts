@@ -81,6 +81,7 @@ describe("SDK client conformance", () => {
           unsavedScenes: [],
           playingScene: null,
           scanning: expect.any(Boolean),
+          jobActive: false,
         });
         expect(
           JSON.parse((result.content as { text: string }[])[0]?.text ?? ""),
