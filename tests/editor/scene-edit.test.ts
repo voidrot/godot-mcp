@@ -10,6 +10,7 @@ import {
   freshScene as freshSceneOn,
   ok as okOn,
   prepareProject,
+  removeProjects,
   saved as savedOn,
   startEditor,
 } from "./harness.ts";
@@ -43,6 +44,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await editor?.stop();
+  await removeProjects();
 });
 
 const ok = (name: string, args: Record<string, unknown> = {}) =>
@@ -530,5 +532,29 @@ describe("loading and bounds", () => {
       property: "points",
       value: "PackedVector2Array(1, 2, 3, 4)",
     });
+  });
+
+  test("32-bit float elements stop at the float32 maximum", async () => {
+    const path = await freshScene();
+    await ok("add_node", { parentPath: ".", type: "Line2D", name: "L" });
+    // A double beyond float32 range would be stored as inf.
+    for (const [property, value] of [
+      ["position", "Vector2(1e300, 0)"],
+      ["position", "Vector2(0, -3.5e38)"],
+      ["points", "PackedVector2Array(0, 0, 1e39, 0)"],
+      ["default_color", "Color(1e39, 0, 0, 1)"],
+    ])
+      expect([
+        property,
+        await failure("update_property", { path: "L", property, value }),
+      ]).toEqual([property, "INVALID_VALUE"]);
+    await ok("update_property", {
+      path: "L",
+      property: "position",
+      value: "Vector2(3.4028235e38, -3.4028235e38)",
+    });
+    const text = await saved(path);
+    expect(text).not.toContain("inf");
+    expect(text).toContain("position = Vector2(3.4028235e+38, -3.4028235e+38)");
   });
 });

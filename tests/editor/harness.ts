@@ -1,5 +1,5 @@
 import { expect } from "bun:test";
-import { appendFile, cp, readFile } from "node:fs/promises";
+import { appendFile, cp, readFile, rm } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { join } from "node:path";
 import { copyFixture, repo, waitFor } from "../helpers.ts";
@@ -34,9 +34,24 @@ export async function freePort(): Promise<number> {
   return address.port;
 }
 
-// A temp copy of fixtures/gd with the addon enabled. port: null leaves the port setting unset.
+const projects: string[] = [];
+const running = new Set<Launched>();
+
+// Every test file calls this from afterAll (bun test shares this module across files, so a hook
+// registered here would run only once). It stops any editor a failed test left running, so it cannot
+// write into a directory being removed, then deletes the projects prepareProject made.
+export async function removeProjects(): Promise<void> {
+  await Promise.all([...running].map((launched) => launched.stop()));
+  await Promise.all(
+    projects.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  );
+}
+
+// A temp copy of fixtures/gd with the addon enabled; call removeProjects in afterAll. port: null
+// leaves the port setting unset.
 export async function prepareProject(port: number | null): Promise<string> {
   const dir = await copyFixture();
+  projects.push(dir);
   await cp(
     join(repo, "addons", "godot_mcp"),
     join(dir, "addons", "godot_mcp"),
@@ -90,7 +105,7 @@ export function launch(dir: string): Launched {
   };
   void pump(child.stdout);
   void pump(child.stderr);
-  return {
+  const launched: Launched = {
     pid: child.pid,
     exited: child.exited,
     output: () => output,
@@ -101,8 +116,11 @@ export function launch(dir: string): Launched {
         if ((err as NodeJS.ErrnoException).code !== "ESRCH") throw err;
       }
       await child.exited;
+      running.delete(launched);
     },
   };
+  running.add(launched);
+  return launched;
 }
 
 // Resolves once an unauthenticated POST gets 401, which proves the whole guard chain is up.

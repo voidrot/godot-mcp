@@ -10,6 +10,7 @@ import {
   freshScene as freshSceneOn,
   ok as okOn,
   prepareProject,
+  removeProjects,
   saved as savedOn,
   startEditor,
 } from "./harness.ts";
@@ -42,6 +43,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await editor?.stop();
+  await removeProjects();
 });
 
 const ok = (name: string, args: Record<string, unknown> = {}) =>
@@ -243,6 +245,57 @@ describe("set_project_setting", () => {
     expect(text).toContain('"01": "b"');
     expect((await ok("get_project_info")).mainScene).toBe("res://sub.tscn");
   };
+
+  test("main scene and autoloads accept a uid:// that resolves to a checked path", async () => {
+    const path = await freshScene();
+    await ok("save_scene");
+    const header = await readFile(join(editor.dir, path.slice(6)), "utf8");
+    const uid = header.match(/uid="(uid:\/\/[^"]+)"/)?.[1];
+    expect(uid).toBeDefined();
+    // The editor writes a .uid file beside each script it indexes.
+    const scriptUid = (
+      await readFile(join(editor.dir, "game_state.gd.uid"), "utf8")
+    ).trim();
+    expect(scriptUid).toStartWith("uid://");
+    try {
+      const result = await ok("set_project_setting", {
+        name: "application/run/main_scene",
+        value: uid,
+      });
+      expect(result.value.value).toBe(uid);
+      await ok("set_project_setting", {
+        name: "autoload/GameState",
+        value: `*${scriptUid}`,
+      });
+      const text = await readFile(join(editor.dir, "project.godot"), "utf8");
+      expect(text).toContain(`run/main_scene="${uid}"`);
+      expect(text).toContain(`GameState="*${scriptUid}"`);
+    } finally {
+      await ok("set_project_setting", {
+        name: "application/run/main_scene",
+        value: "res://main.tscn",
+      });
+      await ok("set_project_setting", {
+        name: "autoload/GameState",
+        value: "*res://game_state.gd",
+      });
+    }
+    // An unknown uid fails; a known one is held to the same extension rule as its path.
+    for (const value of ["uid://nonsense", "uid://", "uid://aaaaaaaaaaaaa"])
+      expect([
+        value,
+        await failure("set_project_setting", {
+          name: "application/run/main_scene",
+          value,
+        }),
+      ]).toEqual([value, "INVALID_VALUE"]);
+    expect(
+      await failure("set_project_setting", {
+        name: "application/run/main_scene",
+        value: scriptUid,
+      }),
+    ).toBe("INVALID_PATH");
+  });
 
   test("settings that run code or change the command line are refused", async () => {
     // main_run_args is how play mode got an arbitrary --log-file path.

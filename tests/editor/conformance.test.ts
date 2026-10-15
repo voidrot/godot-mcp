@@ -5,7 +5,7 @@ import {
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
 import { waitFor } from "../helpers.ts";
-import { type Editor, startEditor } from "./harness.ts";
+import { type Editor, removeProjects, startEditor } from "./harness.ts";
 
 // The SDK client against the real editor, in its default (legacy) mode and in `auto` mode (plan D25).
 
@@ -17,6 +17,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await editor?.stop();
+  await removeProjects();
 });
 
 interface Exchange {

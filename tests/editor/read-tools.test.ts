@@ -9,6 +9,7 @@ import {
   freePort,
   prepareProject,
   rawRequest,
+  removeProjects,
   rpc,
   startEditor,
 } from "./harness.ts";
@@ -61,6 +62,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await editor?.stop();
+  await removeProjects();
 });
 
 const tree = async (args: Record<string, unknown> = {}) =>

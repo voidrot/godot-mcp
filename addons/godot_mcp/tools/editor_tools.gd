@@ -66,6 +66,9 @@ func play_scene(arguments: Dictionary, request: Request) -> Variant:
 	var mode: String = arguments["mode"]
 	# Running makes the editor save every modified scene, bypassing save_scene's checks.
 	for unsaved in EditorInterface.get_unsaved_scenes():
+		# The editor skips a scene with no file yet, so it cannot be auto-saved to a bad path.
+		if unsaved == "":
+			continue
 		var unsafe := SceneAccess.save_problem(unsaved)
 		if not unsafe.is_empty():
 			return ToolError.fail("UNSAFE_AUTOSAVE", "Running would auto-save %s, which cannot be saved safely: %s" % [unsaved, unsafe["error"]["message"]])

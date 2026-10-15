@@ -8,6 +8,7 @@ const EditorTools := preload("tools/editor_tools.gd")
 const NodeTools := preload("tools/node_tools.gd")
 const ProjectTools := preload("tools/project_tools.gd")
 const SceneTools := preload("tools/scene_tools.gd")
+const ScriptTools := preload("tools/script_tools.gd")
 const TreeTools := preload("tools/tree_tools.gd")
 
 const PORT_SETTING := "godot_mcp/server/port"
@@ -37,7 +38,7 @@ func _enter_tree() -> void:
 			return
 	var version := _addon_version()
 	# Callables don't keep RefCounted targets alive, so the plugin holds the MCP server.
-	_mcp = McpServer.new(version, [ProjectTools.new(version), SceneTools.new(_log), NodeTools.new(), TreeTools.new(), EditorTools.new(_log)])
+	_mcp = McpServer.new(version, [ProjectTools.new(version), SceneTools.new(_log), NodeTools.new(), ScriptTools.new(_log), TreeTools.new(), EditorTools.new(_log)])
 	_http = HttpServer.new(tcp, port, token, _mcp.handle)
 	print("godot_mcp: serving http://127.0.0.1:%d/mcp" % port)
 

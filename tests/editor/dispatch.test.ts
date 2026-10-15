@@ -1,7 +1,12 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { copyFile } from "node:fs/promises";
 import { join } from "node:path";
-import { freePort, godotBin, prepareProject } from "./harness.ts";
+import {
+  freePort,
+  godotBin,
+  prepareProject,
+  removeProjects,
+} from "./harness.ts";
 
 // Runs probes/dispatch_probe.gd, which drives the addon's HttpServer and McpServer in-process with the
 // execution budget and write deadline patched down to 600 ms. These checks need timings the real
@@ -55,6 +60,8 @@ beforeAll(async () => {
     results.set(parsed.name, parsed);
   }
 }, 120_000);
+
+afterAll(removeProjects);
 
 describe("dispatcher probe", () => {
   for (const name of expected) {

@@ -43,7 +43,7 @@ func tools() -> Array[Dictionary]:
 		},
 		{
 			"name": "set_project_setting",
-			"description": "Set one project setting and write project.godot, e.g. application/run/main_scene or an autoload. The value is parsed by the setting's declared type, as in update_property; a new setting takes bool, number, string, array or object. Settings under `editor/`, `editor_plugins/` and `godot_mcp/` are refused. `application/run/main_scene` and `autoload/*` must name an existing scene or script, and a string value must not contain control characters. Some settings, autoloads included, apply only after the editor restarts.",
+			"description": "Set one project setting and write project.godot, e.g. application/run/main_scene or an autoload. The value is parsed by the setting's declared type, as in update_property; a new setting takes bool, number, string, array or object. Settings under `editor/`, `editor_plugins/` and `godot_mcp/` are refused. `application/run/main_scene` and `autoload/*` must name an existing scene or script by res:// path or uid:// (a uid is resolved and its path checked), and a string value must not contain control characters. Some settings, autoloads included, apply only after the editor restarts.",
 			"inputSchema": {
 				"type": "object",
 				"properties": {
@@ -150,10 +150,20 @@ func _path_problem(name: String, raw: Variant) -> Dictionary:
 	if not raw is String:
 		return {}
 	if name == "application/run/main_scene" and raw != "":
-		return ResPaths.check_file(raw, ["tscn", "scn"])
+		return _checked_target(raw, ["tscn", "scn"])
 	if name.begins_with("autoload/"):
-		return ResPaths.check_file(raw.trim_prefix("*"), ["tscn", "scn", "gd", "cs"])
+		return _checked_target(raw.trim_prefix("*"), ["tscn", "scn", "gd", "cs"])
 	return {}
+
+
+# The editor stores these as res:// paths or uid:// references; a uid is resolved and its path checked.
+func _checked_target(target: String, extensions: Array[String]) -> Dictionary:
+	if target.begins_with("uid://"):
+		var id := ResourceUID.text_to_id(target)
+		if id == ResourceUID.INVALID_ID or not ResourceUID.has_id(id):
+			return ToolError.fail("INVALID_VALUE", "No resource has the id " + target.left(80))
+		target = ResourceUID.get_id_path(id)
+	return ResPaths.check_file(target, extensions)
 
 
 func _has_control_character(value: Variant) -> bool:

@@ -55,12 +55,13 @@ This replaces v0 entirely. The v0 Bun server (slices 1–2) is retired once the 
 Assumptions still to verify:
 
 - A1: `--headless --editor` loads plugins and runs `_process`. Slice 1, step 1, with stop-and-report.
-- A7: the capturing Logger gets GDScript parse-error lines during `ResourceLoader.load(..., CACHE_MODE_IGNORE)`. Slice 4, step 1.
+- A7: **confirmed in slice 4.** `ResourceLoader.load(path, "", CACHE_MODE_IGNORE)` on a script with a parse or compile error reaches `Logger._log_error` for the first error only (GDScript stops at the first) with `file` = the script path, `function` = `GDScript::reload`, the 1-based `line`, and a `Parse Error: ...` message (the editor also prints `SCRIPT ERROR:` and `at: GDScript::reload (res://x.gd:N)`). A second entry from `gdscript_resource_format.cpp` (`Failed to load script ... Parse error`) has a different `file` and is dropped. `lineUnknown` stays as the fallback for a failed load that logs nothing. GDScript **warnings** (unused variable and the like) reach only the debugger, never the Logger, so they are not reported.
 - A9: open, save and play work headless. **Open and save confirmed in slice 1** (open 7 ms, open→edit→save 18 ms). A headless save logs `ERROR: Parameter "t" is null … texture_2d_get` from the dummy renderer's thumbnail step; slice 3's save Logger capture must ignore it. Play is still pending (slice 3).
 - A10: Claude Code's bundled classifier matches SDK 2.3.1. Operator check.
 - A11: **confirmed in slice 1, pinned in slice 2** (`read-tools.test.ts`): a fresh headless editor auto-opens the main scene. The `NO_SCENE` test starts a second editor on a copy with `run/main_scene` removed.
 - Slice 2 findings: `OS.add_logger` receives the editor's progress lines, ANSI escapes included. `JSON.stringify` escapes `\b\t\n\f\r`, emits the invalid `\v` for U+000B, and leaves other control characters raw, so `mcp_server.gd` rewrites those as `\u00XX` (escape-aware, so a literal backslash-v survives). Godot treats `\` as a path separator after validation runs on the raw text, so `res_paths.gd` rejects backslashes and colons and requires `simplify_path() == path`. A GDScript function with a typed return (`-> Dictionary`) that hits a runtime error returns the empty default, so tool handlers return `Variant` and null means failure. A null Object property has `typeof == TYPE_OBJECT`. `name` has no `PROPERTY_USAGE_EDITOR`. The editor refuses to open a scene with a missing dependency (`broken_ref.tscn`), so `open_scene` ends in `SCENE_SWITCH_TIMEOUT` after 10 s and the missing resource is in the log. On this host `tcp_rmem` max is 100 MB, so a reply at the 4 MB cap never stalls; the write deadline is proven in `dispatch.test.ts` with a 48 MB reply.
 - Slice 3 findings (`mutations.test.ts`): **A9 for play is confirmed**: with `editor/run/main_run_args="--headless"`, `play_scene` starts the game and `playingScene` toggles with `stop_scene`. A headless `save_scene` logs `ERROR` from `texture_2d_get` (`Parameter "t" is null.`) on every save; `save_scene` ignores exactly that entry and fails on any other error since the call began. `EditorInterface.save_scene()` replaces a read-only file through its temp-and-rename save, so `save_scene` checks the owner write bit itself; a read-only directory fails in the editor and shows in the log. A `<path>.remap` makes the editor load the remap target under `<path>`, so a save would overwrite the original with it; creation is not redirected. `res_paths.gd` refuses any path with a sibling `.remap`. Undo and redo of add, delete and move restore descendant owners (checked once with a throwaway provider that called the history's `undo()`; it is not in the suite). The input codec cannot merge `{1: a, "1": b}`, since JSON object keys are all strings; the output side (`value_codec.gd`) still can.
+- Slice 4 findings (`scripts.test.ts`): `get_unsaved_files` lists `res://` paths in Godot master's source (the 4.7.2 tag was not read); the headless editor has no script tab, so `unsavedInEditor: true` and the dirty-buffer refusal are code review only. The diagnostics load (`CACHE_MODE_IGNORE`) reloads an already cached Script in place, which is why a later `update_property script=` sees the new source with no separate refresh (checked). That in-place reload is also why `validate_script res://addons/godot_mcp/...` crashed the editor (SIGSEGV: the reloaded Script had functions on the call stack), so `validate_script` refuses that directory. A leading UTF-8 BOM is stripped from `content` and written back by `edit_script`. A failed write restores the original bytes (edit) or removes the partial file (create), because the editor's save renames its temp file on close without checking write errors; this path is untested, since a full disk is hard to fake. `oldText` is capped at 64 KB. A `.cs` file is readable but not writable or validatable. Script reads and writes are capped at 1 MB, and a file that is not valid UTF-8 gives `NOT_UTF8` so an edit never rewrites bytes it did not touch. `main_scene` and autoload values may be `uid://`; `ResourceUID` resolves them and the resolved path gets the usual extension check. An empty `get_unsaved_scenes()` entry for an untitled scene is UNCONFIRMED; `play_scene` skips `""` either way. Three v0 tests in `tests/godot/run.test.ts` fail while a GUI Godot editor holds the language-server port 6005 (`!thread.is_started()` on `--import`); they fail the same way at slice 3.
 - A12: `OS.kill(-pid)` kills the child's group at runtime. Slice 5, step 1.
 - A13: the GDScript `FileAccess.get_buffer(n)` on a non-blocking pipe returns exactly the bytes read. Slice 5, step 1.
 - A14: `EditorFileSystem.scan()` reimports changed sources, and `is_scanning()` stays true until the import is done. Slice 5.
@@ -81,7 +82,7 @@ Assumptions still to verify:
 | D30 | **A fixed port per project**, from `godot_mcp/server/port`. On first load, if the setting is missing, the plugin tries 6550–6649, saves the first free port, and never scans again. Saving goes through `ProjectSettings.save()`, which rewrites `project.godot` in Godot's normalized form, as any editor settings save does (accepted after the slice 1 review). If `listen` fails later, it prints one error line, writes no token, and doesn't scan. | `url` in `.mcp.json` is static. A second editor on the same project fails cleanly and leaves the first one's token alone. | Scanning on every start (the URL can't follow); one global fixed default (two open projects would collide) |
 | D31 | **One server, one `.mcp.json` entry, `godot-editor`.** The headless tools live in the addon (D44). Every tool therefore needs a running editor. Headless agents or CI run `godot --headless --editor --path P` as a service, which is exactly what the test lane does. | One product, one install, one auth path | Keeping the Bun stdio server alongside (the earlier D31). Merging later was the old plan. |
 | D32 | **23 tools** (table below), reference snake_case names without a prefix. | 187 is the anti-pattern | The reference's groups beyond core |
-| D33 | **No execute-GDScript tool.** If one is ever added, it is gated by a per-user EditorSettings flag, default off. This is **not a sandbox**: validation runs static initializers, attaching runs `@tool` code, setters run script code, `open_scene` runs `@tool` scripts in the scenes it loads and `get_node_properties` runs script getters (both despite `readOnlyHint`), and `run_headless` runs the game. Slice 3 adds more code-running surfaces: `set_project_setting` (autoloads and the main scene run at game start), Object-property loads (`update_property`, `add_node` properties; the type is checked from the file index before loading, but an accepted script or resource still loads), and `add_node {scene}` instancing. `set_project_setting` refuses `editor/`, `editor_plugins/` and `godot_mcp/`, since `editor/run/main_run_args` is the play-mode command line. `move_node` and a rename do not update NodePath properties or signal connections that point at the node. The token is the boundary. | Honest threat model | Calling the exclusion a sandbox |
+| D33 | **No dedicated execute-GDScript tool, but the script writers execute code (see slice 4 below), so the bearer token is the security boundary.** This is **not a sandbox**: validation runs static initializers of `@tool` scripts, attaching runs `@tool` code, setters run script code, `open_scene` runs `@tool` scripts in the scenes it loads and `get_node_properties` runs script getters (both despite `readOnlyHint`), and `run_headless` runs the game. Slice 3 adds more code-running surfaces: `set_project_setting` (autoloads and the main scene run at game start), Object-property loads (`update_property`, `add_node` properties; the type is checked from the file index before loading, but an accepted script or resource still loads), and `add_node {scene}` instancing. `set_project_setting` refuses `editor/`, `editor_plugins/` and `godot_mcp/`, since `editor/run/main_run_args` is the play-mode command line. `move_node` and a rename do not update NodePath properties or signal connections that point at the node. **Slice 4, script writers: the bearer token is the only security boundary.** `create_script` and `edit_script` stay always on, with no gate. One `edit_script` call with a `@tool` script and a `_static_init` runs arbitrary code in the editor, because the writer's own diagnostics load runs the static initializers of @tool scripts (confirmed live; it wrote into `addons/godot_mcp/`). Static initializers of scripts that are not @tool do not run on create or validate. Further channels: `validate_script` and the writers' diagnostics reload the live cached Script in place, so open scenes, autoloads and @tool instances that use it pick up the change at once; `reload_open_files` reloads open script tabs; and an edited EditorPlugin script runs on the next enable or editor restart. `PROTECTED_PATH` (writes and validation under `res://addons/godot_mcp/`, any case) guards against accidental edits of the server's own files and against a crash (validating them reloads Scripts whose functions are on the stack, SIGSEGV); it is **not** a security boundary. Its case-folding is untested off Linux; Windows 8.3 names and Unicode folding are UNCONFIRMED and not hardened. | Honest threat model | Calling the exclusion a sandbox |
 | D34 | **Scene-tree edits** go through `get_undo_redo()`, one `MCP: <verb> <node>` action per call, and results report `undoAction`. Structural edits apply only to nodes the root owns, with a subtree owner map reapplied in do and undo. Disk writes are not undoable. There is **no `undo` tool**. | `remove_child` nulls descendant owners | An `undo` tool: no bound manager `undo()`. Recursive `set_owner(root)`. |
 | D35 | **Value codec.** Output is `{type, value}`: primitives, String, StringName and NodePath native; a Resource becomes `resource_path` or null plus `class`; containers with primitive leaves are JSON; anything else goes through `var_to_str`. Input is checked against the declared type. An Object property takes a validated `res://` path or null. Math and packed numeric types take a literal that must match a whitelist regex before `str_to_var`, with `typeof` checked after. Containers take JSON with primitive leaves. Every other type gets `UNSUPPORTED_TYPE`. | Safe and symmetric (`variant_parser.cpp:995-1170`) | A blacklist; godot_ai's output-only serializer; smart parsing |
 | D36 | **Results** carry `structuredContent` plus a JSON text block, no `outputSchema`. A tool failure returns `isError` with `{error: {code, message}}`; bad params get -32602. GDScript dict schemas feed `tools/list` and a small validator. | The SDK client validates against `outputSchema` | Per-tool output schemas |
@@ -107,7 +108,7 @@ Limits (v0 D17 kept and extended):
 - Write deadline: 10 s.
 - Response: 4 MB.
 - Nodes: 2,000, with `truncated`.
-- Script reads: 1 MB.
+- Script reads and writes: 1 MB.
 - Log ring: 1,000 entries.
 - Job output tails: 64 KB per stream; diagnostics: 200.
 
@@ -144,7 +145,7 @@ tests/fakes/fake-dotnet.sh
 | `read_script` | `path` | `{content, unsavedInEditor}` | `FileAccess`, `get_unsaved_files` | Read code |
 | `create_script` | `path`, `extends`, `className?`, `content?` | `{path, diagnostics}` | Write, `update_file`, validate | New code |
 | `edit_script` | `path`, `oldText`+`newText`\|`content` | `{path, diagnostics}` | Refuses a dirty buffer; write; `reload_open_files` | Change code |
-| `validate_script` | `path` | `{ok, diagnostics}` | `reload()` + Logger around `load(CACHE_MODE_IGNORE)` | Check code (runs static initializers, D33) |
+| `validate_script` | `path` | `{ok, diagnostics}` | `reload()` + Logger around `load(CACHE_MODE_IGNORE)` | Check code (runs `@tool` static initializers, D33) |
 | `get_editor_log` | `since`, `level`, `limit=200` | `{entries, nextSince, dropped}` | Persistent Logger ring | Editor errors and output |
 | `play_scene` | `mode`, `path?` | `{playingScene}` | `play_*` | A human-visible run |
 | `stop_scene` | — | `{stopped}` | `stop_playing_scene` | Pairs with play |
@@ -158,7 +159,7 @@ Deferred:
 - screenshots (the headless editor can't render)
 - runtime-game inspection and output from `play_scene` (`run_headless` captures output instead)
 - input simulation
-- execute GDScript (D33)
+- a dedicated execute-GDScript tool (D33)
 - `undo` (D34)
 - duplicate, signals, groups, animation and the rest
 - the 2026-07-28 era
@@ -220,7 +221,7 @@ Each slice is one commit. The check is `bun run check` plus anything listed. The
   - `create_scene`: success, and refusal of an existing path.
   - `set_project_setting` lands on disk; protected keys are refused.
   - play and stop toggle `playingScene`.
-  - Undo replay is covered only by the GUI smoke test.
+  - Undo replay is covered only by the GUI smoke test. **Passed 2026-10-15:** the user ran Ctrl+Z and Ctrl+Shift+Z in a GUI editor over add, set, add, move and delete edits made through MCP.
 - **Carried from slice 2 review:**
   - `value_codec.gd:60` writes a non-String Dictionary key as its `var_to_str` text, so `{1: a, "1": b}` collapses to one key. The input codec must not inherit this.
   - Writes reuse `res_paths.check_file`. Check whether an in-project `<path>.remap` can redirect a save (UNCONFIRMED).
@@ -235,11 +236,11 @@ Each slice is one commit. The check is `bun run check` plus anything listed. The
   - `NO_MATCH` and `AMBIGUOUS_MATCH`; a syntax error on line 3 is written and reported at line 3.
   - Validation of broken and clean files.
   - The dirty-buffer refusal is checked by code review only.
-- **Carried from slice 3 review** (minor):
+- **Carried from slice 3 review** (minor; all done in slice 4 except the last):
   - `value_decoder.gd:122-124` checks finiteness as a double, so `Vector2(1e300, 0)` saves as `inf`. Bound 32-bit element types at ±3.4028235e38.
   - `play_scene`'s autosave guard may refuse when an untitled modified scene is open (`save_problem("")`). The editor skips path-less scenes, so skip them too (UNCONFIRMED whether the list holds `""`).
   - `set_project_setting` refuses `uid://` values for `main_scene` and autoloads. Resolve them with `ResourceUID` and check the resolved path (UNCONFIRMED how 4.7 stores them).
-  - The test harness leaves its `/tmp/godot-mcp-*` copies behind; 526 had piled up. Clean them up in `afterAll`.
+  - The test harness leaves its `/tmp/godot-mcp-*` copies behind; 526 had piled up. Clean them up in `afterAll`. Done for the editor harness only (`removeProjects`). The v0 `tests/godot/*` and unit tests (`lock-`, `proc-` directories) still leak; they retire with the TS server in slice 9, so they are left alone.
   - For slice 8: an unbuilt C# script's `get_instance_base_type()` is likely `""`, so attaching it is refused.
 
 ### Slice 5. Headless jobs and parser port (coder-high). **Parity gate.**
@@ -247,6 +248,7 @@ Each slice is one commit. The check is `bun run check` plus anything listed. The
 - **Files:** `job_runner.gd`, `output_parser.gd`, `tools/job_tools.gd`, `fixtures/gd/{flood.gd,split_line.gd}`, `tests/editor/jobs.test.ts`
 - **Tools:** `import_assets`, `run_headless`. Also adds `jobActive` to `get_project_info`.
 - **Depends on:** slice 4
+- **Carried from slice 4 review** (minor): Godot buffers small writes until `fclose`, and `FileAccessUnix::_close()` ignores that result before renaming. A full disk during a small `edit_script` can therefore leave an empty file while the tool reports success. After `close()`, read the file back and compare it with the written bytes; on a mismatch, take the restore or remove path.
 - **First step:** pin A12 and A13 with `hang.gd` (`OS.kill(-pid)` leaves the pid dead, and later calls don't log ECHILD noise) and with partial pipe reads. **If non-blocking reads or the kill fail, stop and report.**
 - **Acceptance criteria** (v0 slice 2, ported):
   - `diag.gd` gives exactly the kinds, messages and locations the current `tests/godot/run.test.ts` expects.
@@ -363,13 +365,13 @@ second opinion: codex gpt-6-astra/high — adversarial plan critique, round 1 re
 7. **Port:** auto-picked once in 6550–6649, then fixed (D30).
 8. **Tool surface:** 22 tools plus the gated `build_dotnet`; no `undo` (D32, D34).
 9. **Era:** legacy only; dual-era later (D25).
-10. **Execute GDScript:** excluded (D33).
+10. **Execute GDScript:** no dedicated tool; the script writers run code (D33, user decision in slice 4).
 11. **Distribution:** copy or Asset Library; publishing to the Asset Library is a later step.
 12. **GDExtension:** no; stays GDScript (D43).
 
 ## Not verified
 
-- A1, A7, A9–A16, and the editor's low-processor sleep defaults.
+- A1, A9–A16, and the editor's low-processor sleep defaults.
 - Whether `Node.reparent` preserves descendant owners (made irrelevant by the owner map).
 - `headersHelper` behavior when `headers.json` is missing.
 - macOS overall (chmod is documented; `env -C` and `kill(-pid)` are not checked).

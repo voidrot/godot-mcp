@@ -11,6 +11,7 @@ import {
   prepareProject,
   rawRequest,
   readAuth,
+  removeProjects,
   rpc,
   startEditor,
   waitForServer,
@@ -27,6 +28,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await editor?.stop();
+  await removeProjects();
 });
 
 type RequestOptions = Parameters<typeof buildRequest>[1];

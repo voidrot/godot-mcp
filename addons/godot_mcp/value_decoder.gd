@@ -12,6 +12,8 @@ const ToolError := preload("tool_error.gd")
 const MAX_LITERAL_CHARS := 4096
 # JSON numbers arrive as floats; beyond 2^53 they no longer name one integer.
 const MAX_SAFE_INT := 9007199254740992.0
+# Vector, Rect, Color and the other non-integer literal types hold 32-bit floats; a larger double becomes inf.
+const MAX_FLOAT32 := 3.4028235e38
 const RESOURCE_EXTENSIONS: Array[String] = [
 	"tres", "res", "tscn", "scn", "gd", "cs", "gdshader", "gdshaderinc", "png", "jpg", "jpeg", "webp",
 	"svg", "bmp", "tga", "exr", "hdr", "wav", "ogg", "mp3", "ttf", "otf", "woff", "woff2", "fnt",
@@ -109,7 +111,13 @@ static func _literal(raw: Variant, info: Dictionary) -> Dictionary:
 	var is_int: bool = LITERAL_TYPES[type]
 	var low := -2147483648.0
 	var high := 2147483647.0
-	if type == TYPE_PACKED_BYTE_ARRAY:
+	if type == TYPE_PACKED_FLOAT64_ARRAY:
+		low = -INF
+		high = INF
+	elif not is_int:
+		low = -MAX_FLOAT32
+		high = MAX_FLOAT32
+	elif type == TYPE_PACKED_BYTE_ARRAY:
 		low = 0.0
 		high = 255.0
 	elif type == TYPE_PACKED_INT64_ARRAY:
@@ -120,7 +128,7 @@ static func _literal(raw: Variant, info: Dictionary) -> Dictionary:
 		return _invalid(info["name"], type, raw)
 	for found in found_all:
 		var number := found.get_string().to_float()
-		if not is_finite(number) or (is_int and (number < low or number > high)):
+		if not is_finite(number) or number < low or number > high:
 			return ToolError.fail("INVALID_VALUE", "%s has an element out of range: %s" % [info["name"], found.get_string()])
 	var parsed: Variant = str_to_var(raw)
 	if typeof(parsed) != type:
