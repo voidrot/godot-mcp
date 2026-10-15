@@ -1,10 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   Client,
   type FetchLike,
   StreamableHTTPClientTransport,
 } from "@modelcontextprotocol/client";
-import { waitFor } from "../helpers.ts";
+import { repo, waitFor } from "../helpers.ts";
 import { type Editor, removeProjects, startEditor } from "./harness.ts";
 
 // The SDK client against the real editor, in its default (legacy) mode and in `auto` mode (plan D25).
@@ -114,4 +116,40 @@ describe("SDK client conformance", () => {
   test("the editor printed no SCRIPT ERROR", () => {
     expect(editor.output()).not.toContain("SCRIPT ERROR");
   });
+});
+
+// Drift check: the shipped skill must name every tool, and the instructions must fit the limit.
+describe("agent skill and instructions", () => {
+  test("SKILL.md has the godot-mcp name and marker, names every tool, and the instructions fit 2,000 characters", async () => {
+    const skill = readFileSync(
+      join(repo, "addons", "godot_mcp", "SKILL.md"),
+      "utf8",
+    );
+    const frontmatter = /^---\n([\s\S]*?)\n---\n/.exec(skill)?.[1] ?? "";
+    expect(frontmatter).toMatch(/^name: godot-mcp$/m);
+    expect(frontmatter).toMatch(/^metadata:\n {2}godot_mcp: "true"$/m);
+
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${editor.port}/mcp`),
+      { requestInit: { headers: { Authorization: editor.auth } } },
+    );
+    const client = new Client({
+      name: "godot-mcp-conformance",
+      version: "0.0.0",
+    });
+    try {
+      await client.connect(transport);
+      const instructions = client.getInstructions() ?? "";
+      expect(instructions.length).toBeGreaterThan(0);
+      expect(instructions.length).toBeLessThanOrEqual(2000);
+
+      const { tools } = await client.listTools();
+      expect(tools.map((t) => t.name)).toContain("get_project_info");
+      for (const tool of tools) {
+        expect(skill).toContain(`\`${tool.name}\``);
+      }
+    } finally {
+      await client.close();
+    }
+  }, 30_000);
 });

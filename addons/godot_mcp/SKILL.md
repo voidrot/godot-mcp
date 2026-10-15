@@ -1,8 +1,192 @@
 ---
 name: godot-mcp
-description: Drives the open Godot editor through its godot-editor MCP server. Use when working in a Godot project that has the godot_mcp addon enabled.
+description: Drives the Godot editor open on a project through its godot-editor MCP server, from the godot_mcp addon. Use it in a Godot project with the addon enabled for tasks such as "add a Sprite2D under Player", "set the collision size", "write a script and attach it", "run the main scene headless", or "the MCP server won't connect". Not for Godot projects without the addon.
 metadata:
   godot_mcp: "true"
 ---
 
-The full guide to the godot-mcp tools arrives in a later release.
+# Godot MCP
+
+The `godot-editor` server is the open Godot editor, serving one project. Its tools read and change the editor's live state. The editor must be running with the godot_mcp plugin enabled. With no editor, no tools respond.
+
+## Start
+
+1. Call `get_project_info`. It returns the project name, main scene, features, autoloads, open and unsaved scenes, the playing scene, and `jobActive`.
+2. If `jobActive` is true, wait before you call `run_headless` or `import_assets`. Otherwise the call fails with `PROJECT_BUSY`.
+
+## Know where a change lives
+
+- Node edits (`add_node`, `delete_node`, `move_node`, `update_property`) change the edited scene in the editor. Each is one undo step. None of them reaches disk until `save_scene` succeeds.
+- `create_scene` writes its new `.tscn` at once. `open_scene` only switches scenes.
+- Script writes (`create_script`, `edit_script`) and `set_project_setting` write files at once.
+- `run_headless` and `read_script` read files on disk. Save first, or the run uses the old content. `run_headless` lists the scenes still unsaved in `unsavedScenes`.
+
+## Edit a scene
+
+1. Open the scene with `open_scene`, or make one with `create_scene`. Node tools need an edited scene and fail with `NO_SCENE` without one.
+2. Read the node paths with `get_scene_tree`. Paths are relative to the scene root, and `"."` is the root.
+3. Change the scene with `add_node`, `update_property`, `move_node`, or `delete_node`.
+4. Call `save_scene`. Check that it returns no error.
+5. Call `run_headless` with `scene` set to the edited scene's `res://` path. Read `ok` and the parsed `diagnostics`. Godot exits 0 after a script error, so the exit code alone proves nothing. The run reads files on disk, so step 4 must have succeeded.
+
+## Write a script
+
+1. Call `create_script` with `path`, `extends`, and optionally `className` and `content`. The response holds the script's diagnostics. A syntax error still writes the file, so read the diagnostics.
+2. For `@tool` or another leading annotation, create the file, then replace it with `edit_script` and `content`. The body that `create_script` writes comes after the `extends` line.
+3. Attach it with `update_property`, using `property: "script"` and `value` set to the script's `res://` path. Then call `save_scene`.
+4. After a later change, `edit_script` returns diagnostics too. Call `validate_script` to recheck a file alone.
+
+## Add assets
+
+After you add or change images, models, or audio, call `import_assets` before `run_headless` or `play_scene`. It rescans the project and returns `errorCount`, `warningCount`, and `diagnostics` for the import.
+
+## Tools
+
+| Tool | Does | Arguments |
+| --- | --- | --- |
+| `get_project_info` | Read the project, editor, and job state. Call first. | none |
+| `get_project_settings` | Read settings with their defaults, sorted by name. | `prefix`, `limit` (default 500, max 5000) |
+| `set_project_setting` | Write a setting to `project.godot`. Refuses `editor/`, `editor_plugins/`, and `godot_mcp/`. | `name`, `value` |
+| `install_agent_skill` | Write this skill into the project and return the `.mcp.json` entry. | `overwrite` |
+| `get_scene_tree` | List the edited scene's nodes, breadth first. | `rootPath`, `maxDepth` (default 8, max 64), `maxNodes` (default 2000, max 10000) |
+| `open_scene` | Make a `.tscn` or `.scn` the edited scene. | `path` |
+| `create_scene` | Make a new `.tscn` with a root of class `rootType`, and open it. | `path`, `rootType`, `rootName` |
+| `save_scene` | Write the edited scene to its file. | none |
+| `add_node` | Add a node of class `type`, or an instance of `scene`. | `parentPath`, `type` or `scene`, `name`, `properties` |
+| `delete_node` | Delete a node and its children. The root can't be deleted. | `path` |
+| `move_node` | Move a node under a new parent, or reorder it. The root can't move. | `path`, `newParentPath`, `index` |
+| `get_node_properties` | Read a node's editor-visible properties. | `path`, `names` |
+| `update_property` | Set one property. `script` attaches a script, and `name` renames the node. | `path`, `property`, `value` |
+| `read_script` | Read a `.gd` or `.cs` file as text. | `path` |
+| `create_script` | Create a `.gd` file and return its diagnostics. | `path`, `extends`, `className`, `content` |
+| `edit_script` | Replace one exact `oldText` with `newText`, or the whole file with `content`. | `path`, and `oldText` and `newText` or `content` |
+| `validate_script` | Reload a `.gd` file from disk and report its first parse error. | `path` |
+| `run_headless` | Run the project, a scene, or a script in a separate headless process. | `scene` or `script`, `frames`, `userArgs`, `timeoutSec` (default 60, max 540) |
+| `import_assets` | Rescan the project and import new or changed assets. | `timeoutSec` (default 120, max 540) |
+| `get_editor_log` | Read the editor's errors, warnings, and printed output. | `since`, `level`, `limit` (default 200, max 1000) |
+| `play_scene` | Run a scene in the editor's play mode. Output is not captured. | `mode` (`main`, `current`, or `custom`), `path` for `custom` |
+| `stop_scene` | Stop the scene that is playing. | none |
+
+## Values
+
+`value` and `properties` are parsed by the property's declared type.
+
+| Declared type | Send | Example |
+| --- | --- | --- |
+| `bool`, `int`, `float`, `String`, `StringName`, `NodePath` | JSON. An `int` must be a whole number. | `true`, `3`, `"Player"` |
+| Math types (`Vector2`, `Rect2`, `Transform2D`, ...) and packed numeric arrays | A Godot literal string | `"Vector2(1, 2)"`, `"PackedInt32Array(1, 2)"` |
+| `Color` | A literal string, or `#rrggbb` or `#rrggbbaa` | `"Color(1, 0, 0, 1)"`, `"#ff8800"` |
+| `Array`, `Dictionary` | JSON. A typed array or dictionary is refused. | `[1, "a"]` |
+| Resource (`Object`) | The `res://` path of a resource, or `null` | `"res://player_frames.tres"` |
+
+- A resource path must already be in the editor's file index. Otherwise you get `INVALID_VALUE`. Wait for the scan, or call `import_assets`.
+- Other types are refused with `UNSUPPORTED_TYPE`.
+- A literal string is at most 4,096 characters.
+- Reads come back as `{type, value}`. A resource comes back as its path and `class`, and a math value as its Godot literal.
+
+## Errors
+
+A tool failure returns `isError: true`, with `structuredContent.error` holding `code` and `message`. The message names the file, path, or property involved. Protocol errors come back as JSON-RPC errors instead: `-32602` for bad arguments or an unknown tool, and `-32603` for an internal error, an overrun of the 30-second budget, or a response over 4 MB.
+
+| Code | Meaning and fix |
+| --- | --- |
+| `PROJECT_BUSY` | A `run_headless` or `import_assets` job is running. Retry when `jobActive` is false. |
+| `IMPORT_IN_PROGRESS` | The editor was still importing when the run's deadline passed. Retry, or call `import_assets` first. |
+| `CANCELLED` | The request was cancelled. A cancelled run is killed. A cancelled import keeps running in the editor. |
+| `NO_SCENE` | Call `open_scene` or `create_scene`. |
+| `NODE_NOT_FOUND`, `PROPERTY_NOT_FOUND` | Check the path with `get_scene_tree`, or the property name with `get_node_properties`. |
+| `INVALID_VALUE`, `UNSUPPORTED_TYPE` | The value doesn't fit the declared type. See Values. |
+| `INVALID_ARGUMENT` | The arguments conflict, for example `scene` with `script`, or `path` with a `play_scene` mode other than `custom`. |
+| `INVALID_OPERATION`, `INVALID_MOVE` | The root can't be deleted or moved, or a node can't move into its own subtree. |
+| `DUPLICATE_NAME` | A sibling already has that name. |
+| `INVALID_NAME` | A setting name must be letters, digits, and `_` segments joined by `/`. |
+| `INVALID_TYPE` | `add_node` got a class that is unknown, abstract, editor-only, or not a Node. |
+| `SCENE_CYCLE` | `add_node` with `scene` would nest the edited scene inside itself. |
+| `INVALID_PATH` | A `res://` path failed a rule. It must start with `res://`, and it must be normalized, with no `..`, `\`, `:`, or control characters. It must not be under `res://.godot/`, pass through a symbolic link, or have a `.remap` file. |
+| `FILE_NOT_FOUND`, `FILE_EXISTS`, `DIR_NOT_FOUND` | The file is missing, the new file already exists, or its folder is missing. |
+| `PROTECTED_PATH`, `PROTECTED_SETTING` | Scripts under `addons/godot_mcp/` can't be written or validated. The `editor/`, `editor_plugins/`, and `godot_mcp/` settings can't be set. |
+| `NO_MATCH`, `AMBIGUOUS_MATCH` | `oldText` is absent, or occurs more than once. Add surrounding text so it matches once. |
+| `TOO_LARGE` | `oldText` is over 64 KB, or a script is over 1 MB. |
+| `UNSAVED_EDITOR_BUFFER` | The script editor holds unsaved changes to the file. Save or revert them in the editor. |
+| `SAVE_FAILED`, `WRITE_FAILED`, `READ_FAILED`, `LOAD_FAILED` | A disk or load problem. Read the message, and check `get_editor_log`. |
+| `UNSAFE_AUTOSAVE` | `play_scene` would auto-save a scene that can't be saved safely. Fix that scene's save problem first. |
+| `PLAY_FAILED`, `STOP_FAILED`, `SCENE_SWITCH_TIMEOUT` | The editor didn't start, stop, or switch within 10 seconds. Check `get_editor_log`. |
+| `SPAWN_FAILED` | `run_headless` couldn't start its process. The message names the cause: GNU `timeout` is not on `PATH`, or the editor's binary couldn't be started. |
+| `INTERNAL` | A handler hit a script error. Check `get_editor_log`. |
+
+The setup codes (`NOT_LISTENING`, `UNSUPPORTED_PLATFORM`, `FOREIGN_SKILL`, `MISSING_SKILL`, `IS_LINK`, `UNSAFE_PATH`) appear only in `install_agent_skill`. See Setup.
+
+## Limits
+
+| Item | Limit |
+| --- | --- |
+| Request body | 1 MB. Headers 16 KB. |
+| Concurrency | One request runs at a time, in arrival order. Four connections at once; a fifth is closed. |
+| Execution | 30 seconds from queueing to answer. `run_headless` and `import_assets` set their own budget. |
+| Response | 4 MB. |
+| Scripts | 1 MB per read or write. `oldText` up to 64 KB. |
+| Literal values | 4,096 characters. |
+| `userArgs` | 64 entries, 1,024 characters each. |
+| Scene tree | `maxDepth` up to 64. `maxNodes` up to 10,000. |
+| Settings | `limit` up to 5,000. |
+| Editor log | 1,000 entries kept. `limit` up to 1,000. |
+| Diagnostics | 200 entries, 1,000 characters per line, 120,000 characters in all. |
+| Scene switch, play, and stop | 10 seconds each. |
+| Job timeouts | `run_headless` defaults to 60 seconds, `import_assets` to 120, and both cap at 540. |
+
+## Jobs
+
+- `run_headless` and `import_assets` are jobs. Only one job runs at a time, and a second one gets `PROJECT_BUSY` at once.
+- `run_headless` waits for a running import first. It uses its own `timeoutSec`. When the time runs out, Godot's process group is killed, and the result has `timedOut: true` and `exitCode: null`.
+- `run_headless` returns `stdoutTail` and `stderrTail`, which are the ends of each stream. `truncated` is true when output was cut.
+- A game killed by signal N reports `exitCode` N, the same as `exit(N)`, so the exit code alone can't tell them apart.
+- A game that reads stdin waits for the timeout, because its stdin never closes.
+- `import_assets` holds the request queue, so other editor tools wait behind it and fail after 30 seconds. `run_headless` lets them run meanwhile.
+- A cancelled request stops waiting. Cancelling a `run_headless` kills its child process.
+
+## Run and play
+
+- Use `run_headless` to check behavior and read output. It accepts a `scene`, a `script` that extends `SceneTree`, or nothing for the main scene. `userArgs` go to the game after `--`.
+- Use `play_scene` to show a scene in the editor, like F5 to F7 in the editor. It returns once the game has started. It does not capture output. It saves every modified scene first.
+- Use `stop_scene` to end a scene that `play_scene` started, or one a person started. `stopped` is false when nothing was playing.
+
+## Code runs in the editor
+
+Several tools also run project code. `validate_script` and the script writers run the static initializers of `@tool` scripts. A `@tool` script with a `_static_init` runs arbitrary code in the editor. `open_scene` runs the `@tool` scripts in the scenes it loads. `get_node_properties` can run script getters. Setting a property can run a setter. `set_project_setting` changes autoloads and the main scene, which run when the game starts. `run_headless` and `play_scene` run the game.
+
+There is no sandbox. The bearer token is the only boundary. `addons/godot_mcp/` refuses script writes and validation with `PROTECTED_PATH`. That guards against accidents, not against a hostile caller. Use this server only with projects you trust.
+
+## Latency when the editor is unfocused
+
+Calls can be slow while the editor window is in the background. The server answers from the editor's frame loop, and the editor may slow that loop in low-processor mode when its window is unfocused. The cause is not confirmed. If calls stall, bring the editor window to the front and retry.
+
+## Troubleshoot
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Connection refused | The editor is closed, the plugin is disabled, or the port is wrong. | Open the project, and enable the plugin in Project Settings > Plugins. The editor prints `godot_mcp: serving http://127.0.0.1:<port>/mcp` when the server starts. Make the `.mcp.json` URL match that port. |
+| `cannot listen` in editor output | The saved port is taken, or a second editor has this project open. | Close the other editor. To pick a new port, remove `godot_mcp/server/port` from `project.godot` (`set_project_setting` refuses this key), reload the plugin, then re-run setup to update `.mcp.json`. |
+| 401 Unauthorized | The token changed. The plugin makes a new token each time it loads, so a restart or plugin reload invalidates the old one. | Reconnect the MCP client. The `.mcp.json` `headersHelper` reads the current token at connect time. Don't copy the token into a file by hand. |
+| Claude Code doesn't connect to `godot-editor` | The project's MCP server hasn't been approved. | Accept the trust prompt for project MCP servers, then reconnect. |
+| Protocol error at connect | The client negotiates the protocol differently. This server accepts `2025-11-25`, `2025-06-18`, and `2025-03-26`. | Set `MCP_PROTOCOL_NEGOTIATION=legacy` in the client's environment, then reconnect. |
+| Requests time out | The `.mcp.json` `timeout` is shorter than the work. The install sets it to 600000 ms. The server gives a request 30 seconds, counting queue time. | Raise the client `timeout`. Move long work into `run_headless` or `import_assets`, and set `timeoutSec`. |
+| `INVALID_VALUE`, not in the file index | The resource was added after the editor's last scan. | Call `import_assets`, or wait for scanning to finish. |
+| `PROJECT_BUSY` for a long time | A job is still running. | Check `jobActive`, and cancel the request that started the job if it is stuck. |
+
+## Run the editor as a service
+
+For CI or an agent without a window, run the editor headless against the project:
+
+```sh
+godot --headless --editor --path <project>
+```
+
+The plugin loads and serves in this mode. The repo's test lane starts it this way. Each start writes a new token to `res://.godot/godot_mcp/headers.json`, so reconnect the client after a restart.
+
+## Setup
+
+- In the editor, choose Project > Tools > "MCP: install agent skill / show config". The dialog writes `.claude/skills/godot-mcp/SKILL.md` and shows the `.mcp.json` entry. Copy that entry into `.mcp.json`. The Copy button puts it on the clipboard.
+- `install_agent_skill` does the same from the agent side. It returns the entry, and it refuses a `SKILL.md` without the godot_mcp marker unless `overwrite` is true.
+- Run setup again after you upgrade the addon. It rewrites `SKILL.md` when the copy differs.
+- Setup never writes `.mcp.json`, and it never writes the token. Don't write either by hand.
+- Setup is POSIX only. Windows gets `UNSUPPORTED_PLATFORM`. It also refuses a link in the install path, and a project path that contains `${` or a control character.
