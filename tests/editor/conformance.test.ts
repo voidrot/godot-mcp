@@ -79,6 +79,7 @@ describe("SDK client conformance", () => {
           mainScene: "res://main.tscn",
           features: ["4.7", "Forward Plus"],
           autoloads: { GameState: "*res://game_state.gd" },
+          dotnet: null,
           openScenes: expect.any(Array),
           unsavedScenes: [],
           playingScene: null,
@@ -145,6 +146,9 @@ describe("agent skill and instructions", () => {
 
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name)).toContain("get_project_info");
+      // build_dotnet is registered only for a project with one root csproj; build.test.ts runs this
+      // same every-listed-tool-is-named check on such a project.
+      expect(tools.map((t) => t.name)).not.toContain("build_dotnet");
       for (const tool of tools) {
         expect(skill).toContain(`\`${tool.name}\``);
       }

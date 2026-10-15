@@ -9,6 +9,15 @@ const ToolError := preload("tool_error.gd")
 const MAX_PATH_CHARS := 4096
 
 
+# The .csproj file names in the project root.
+static func root_csprojs() -> PackedStringArray:
+	var found := PackedStringArray()
+	for file in DirAccess.get_files_at("res://"):
+		if file.get_extension() == "csproj":
+			found.append(file)
+	return found
+
+
 # Returns {} when `path` names an existing file with one of `extensions` (lowercase, no dot),
 # otherwise a tool failure. Rejects `..`, backslashes, colons, control characters, anything under
 # res://.godot/ (any case), and link components.

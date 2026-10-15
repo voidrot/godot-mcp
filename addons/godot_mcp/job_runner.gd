@@ -1,13 +1,14 @@
 @tool
 extends RefCounted
 
-## Runs one Godot child process to completion without blocking the editor (D44). It reads both pipes a
-## few KB per frame, parses stderr as it arrives, and on a timeout or a cancelled request kills the
-## child's whole process group. The child runs under coreutils `timeout`, which also ends it if the
-## editor dies first. Limits: no graceful stop; a descendant that calls setsid escapes the group kill;
-## the child's stdin is a pipe nobody closes, so a game that reads stdin waits for the timeout;
-## Linux only (macOS has no `timeout`).
+## Runs one child process (a headless Godot, or `dotnet build`) to completion without blocking the
+## editor (D44). It reads both pipes a few KB per frame, parses one or both streams as they arrive, and
+## on a timeout or a cancelled request kills the child's whole process group. The child runs under
+## coreutils `timeout`, which also ends it if the editor dies first. Limits: no graceful stop; a
+## descendant that calls setsid escapes the group kill; the child's stdin is a pipe nobody closes, so a
+## game that reads stdin waits for the timeout; Linux only (macOS has no `timeout`).
 
+const MsbuildParser := preload("msbuild_parser.gd")
 const OutputParser := preload("output_parser.gd")
 const Request := preload("request.gd")
 const ToolError := preload("tool_error.gd")
@@ -40,6 +41,61 @@ class Tail:
 ## Runs this editor's own binary with `args`, for at most `timeout_ms`. A coroutine. Returns the
 ## RunResult dictionary, or a tool failure when the child can't start or the request is cancelled.
 func run(args: PackedStringArray, timeout_ms: int, request: Request) -> Dictionary:
+	var parser := OutputParser.new()
+	var done := await _execute(PackedStringArray([OS.get_executable_path()]) + args, timeout_ms, request, null, parser)
+	if done.has("error"):
+		return done
+	var stdout: Tail = done["stdout"]
+	var stderr: Tail = done["stderr"]
+	return {
+		# Godot exits 0 after script errors, so the exit code alone proves nothing.
+		"ok": done["exit_code"] == 0 and not done["timed_out"] and parser.error_count == 0,
+		"exitCode": done["exit_code"],
+		"timedOut": done["timed_out"],
+		"durationMs": done["duration_ms"],
+		"diagnostics": parser.diagnostics,
+		"errorCount": parser.error_count,
+		"warningCount": parser.warning_count,
+		"stdoutTail": OutputParser.decode(stdout.bytes),
+		"stderrTail": OutputParser.decode(stderr.bytes),
+		"truncated": stdout.truncated or stderr.truncated or parser.dropped(),
+	}
+
+
+## Runs `command` (program first) for at most `timeout_ms` and parses its stdout as MSBuild output,
+## showing file paths under `root` as res:// paths. A coroutine. Returns the build result, or a tool
+## failure when the command can't start or the request is cancelled.
+func build(command: PackedStringArray, root: String, timeout_ms: int, request: Request) -> Dictionary:
+	var parser := MsbuildParser.new(root)
+	var done := await _execute(command, timeout_ms, request, parser, null)
+	if done.has("error"):
+		return done
+	var exit_code: Variant = done["exit_code"]
+	if exit_code != null and exit_code != 0:
+		parser.note_failed_exit(exit_code)
+	var stdout: Tail = done["stdout"]
+	var stderr: Tail = done["stderr"]
+	# One tail for both streams, stderr last: that is where the dotnet host reports what it could not start.
+	var output := stdout.bytes + stderr.bytes
+	var cut := output.size() > TAIL_BYTES
+	if cut:
+		output = output.slice(output.size() - TAIL_BYTES)
+	return {
+		"ok": exit_code == 0 and not done["timed_out"] and parser.error_count == 0,
+		"exitCode": exit_code,
+		"timedOut": done["timed_out"],
+		"durationMs": done["duration_ms"],
+		"diagnostics": parser.diagnostics,
+		"errorCount": parser.error_count,
+		"warningCount": parser.warning_count,
+		"outputTail": OutputParser.decode(output),
+		"truncated": cut or stdout.truncated or stderr.truncated or parser.dropped(),
+	}
+
+
+# Runs `command` under `timeout`, feeding stdout and stderr to their parsers (either may be null).
+# Returns {exit_code, timed_out, duration_ms, stdout, stderr}, or a tool failure.
+func _execute(command: PackedStringArray, timeout_ms: int, request: Request, stdout_parser: OutputParser, stderr_parser: OutputParser) -> Dictionary:
 	if not _have_timeout():
 		return ToolError.fail("SPAWN_FAILED", "The `timeout` command (GNU coreutils) is not on PATH; jobs run under it so that an orphaned child ends if the editor dies")
 	var started := Time.get_ticks_msec()
@@ -47,19 +103,18 @@ func run(args: PackedStringArray, timeout_ms: int, request: Request) -> Dictiona
 	# group. It is the backstop that ends the child if the editor is killed before it can: SIGTERM and
 	# SIGINT stop the editor without running _exit_tree.
 	var limit_sec := ceili(timeout_ms / 1000.0) + ORPHAN_GRACE_SEC
-	var wrapped := PackedStringArray(["-k", str(ORPHAN_KILL_SEC), str(limit_sec), OS.get_executable_path()]) + args
+	var wrapped := PackedStringArray(["-k", str(ORPHAN_KILL_SEC), str(limit_sec)]) + command
 	var spawned := OS.execute_with_pipe("timeout", wrapped, false)
 	if spawned.is_empty():
-		return ToolError.fail("SPAWN_FAILED", "Could not start " + OS.get_executable_path())
+		return ToolError.fail("SPAWN_FAILED", "Could not start " + command[0])
 	var pid: int = spawned["pid"]
 	_pid = pid
 	var stdout := Tail.new()
 	var stderr := Tail.new()
-	var parser := OutputParser.new()
 	var timed_out := false
 	while true:
-		_drain(spawned["stdio"], stdout, null, FRAME_READ_BYTES)
-		_drain(spawned["stderr"], stderr, parser, FRAME_READ_BYTES)
+		_drain(spawned["stdio"], stdout, stdout_parser, FRAME_READ_BYTES)
+		_drain(spawned["stderr"], stderr, stderr_parser, FRAME_READ_BYTES)
 		if not OS.is_process_running(pid):
 			break
 		if Time.get_ticks_msec() - started >= timeout_ms:
@@ -83,21 +138,17 @@ func run(args: PackedStringArray, timeout_ms: int, request: Request) -> Dictiona
 		# The deadline passing without a kill means the editor stalled; the run still timed out.
 		timed_out = Time.get_ticks_msec() - started >= timeout_ms
 	for _round in DRAIN_ROUNDS:
-		_drain(spawned["stdio"], stdout, null, TAIL_BYTES)
-		_drain(spawned["stderr"], stderr, parser, TAIL_BYTES)
-	parser.end()
+		_drain(spawned["stdio"], stdout, stdout_parser, TAIL_BYTES)
+		_drain(spawned["stderr"], stderr, stderr_parser, TAIL_BYTES)
+	for parser in [stdout_parser, stderr_parser]:
+		if parser != null:
+			parser.end()
 	return {
-		# Godot exits 0 after script errors, so the exit code alone proves nothing.
-		"ok": exit_code == 0 and not timed_out and parser.error_count == 0,
-		"exitCode": exit_code,
-		"timedOut": timed_out,
-		"durationMs": Time.get_ticks_msec() - started,
-		"diagnostics": parser.diagnostics,
-		"errorCount": parser.error_count,
-		"warningCount": parser.warning_count,
-		"stdoutTail": OutputParser.decode(stdout.bytes),
-		"stderrTail": OutputParser.decode(stderr.bytes),
-		"truncated": stdout.truncated or stderr.truncated or parser.dropped(),
+		"exit_code": exit_code,
+		"timed_out": timed_out,
+		"duration_ms": Time.get_ticks_msec() - started,
+		"stdout": stdout,
+		"stderr": stderr,
 	}
 
 
@@ -116,7 +167,7 @@ func kill() -> void:
 		_pid = 0
 
 
-# Reads what is ready on `pipe`, at most `limit` bytes, into the tail and the parser.
+# Reads what is ready on `pipe`, at most `limit` bytes, into the tail and the parser (null for none).
 func _drain(pipe: FileAccess, tail: Tail, parser: OutputParser, limit: int) -> void:
 	var left := limit
 	while left > 0:

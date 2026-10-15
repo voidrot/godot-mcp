@@ -47,14 +47,17 @@ export async function removeProjects(): Promise<void> {
   );
 }
 
-// A temp copy of fixtures/gd with the addon enabled; call removeProjects in afterAll. port: null
+// A temp copy of a fixture with the addon enabled; call removeProjects in afterAll. port: null
 // leaves the port setting unset. prefix names the temp directory, for paths that need odd characters.
+// The "cs" fixture keeps its Godot project in game/ beside FixtureLib/, so the copy is the parent.
 export async function prepareProject(
   port: number | null,
   prefix?: string,
+  fixture: "gd" | "cs" = "gd",
 ): Promise<string> {
-  const dir = await copyFixture("gd", prefix);
-  projects.push(dir);
+  const root = await copyFixture(fixture, prefix);
+  projects.push(root);
+  const dir = fixture === "cs" ? join(root, "game") : root;
   await cp(
     join(repo, "addons", "godot_mcp"),
     join(dir, "addons", "godot_mcp"),
@@ -95,10 +98,16 @@ export interface Launched {
 }
 
 // Spawns the editor in its own process group and captures both streams.
-export function launch(dir: string): Launched {
+export function launch(dir: string, env?: Record<string, string>): Launched {
   const child = Bun.spawn(
     [godotBin(), "--headless", "--editor", "--path", dir],
-    { stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true },
+    {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      detached: true,
+      env: { ...process.env, ...env },
+    },
   );
   let output = "";
   const pump = async (stream: ReadableStream<Uint8Array>) => {
@@ -145,12 +154,13 @@ export async function waitForServer(
   }, 90_000);
 }
 
+// env is added to the editor's environment, and so to the jobs it spawns.
 export async function startEditor(
-  opts: { dir?: string; port?: number } = {},
+  opts: { dir?: string; port?: number; env?: Record<string, string> } = {},
 ): Promise<Editor> {
   const port = opts.port ?? (await freePort());
   const dir = opts.dir ?? (await prepareProject(port));
-  const launched = launch(dir);
+  const launched = launch(dir, opts.env);
   try {
     await waitForServer(port, launched);
   } catch (err) {

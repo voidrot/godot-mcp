@@ -6,6 +6,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 export const repo = join(import.meta.dir, "..");
 export const fakeGodot = join(repo, "tests", "fakes", "fake-godot.sh");
+export const fakeDotnet = join(repo, "tests", "fakes", "fake-dotnet.sh");
 
 // Fixtures are copied so `.godot/` never lands in the repo (plan D4).
 export async function copyFixture(

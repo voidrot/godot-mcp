@@ -1,9 +1,11 @@
 @tool
 extends RefCounted
 
-## import_assets and run_headless (D44, D46). One job at a time per editor: while one runs, the next
-## gets PROJECT_BUSY at once. run_headless hands the FIFO back once validated, since it touches only
-## its own child process (D37); import_assets keeps the FIFO, since it drives the editor's own importer.
+## import_assets, run_headless and build_dotnet (D44, D46). One job at a time per editor: while one
+## runs, the next gets PROJECT_BUSY at once. run_headless and build_dotnet hand the FIFO back once
+## validated, since they touch only their own child process (D37); import_assets keeps the FIFO, since
+## it drives the editor's own importer. build_dotnet is registered only when the project root holds
+## exactly one csproj (D15).
 
 const JobRunner := preload("../job_runner.gd")
 const LogBuffer := preload("../log_buffer.gd")
@@ -18,6 +20,9 @@ const SCAN_RETRIES := 5
 const MAX_USER_ARGS := 64
 const MAX_USER_ARG_CHARS := 1024
 
+# A build configuration name. It can't start with `-`, so it never reads as a dotnet switch.
+static var _CONFIGURATION := RegEx.create_from_string("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}\\z")
+
 enum Wait { DONE, TIMED_OUT, CANCELLED }
 
 # Held here because handler Callables don't keep it alive.
@@ -31,7 +36,7 @@ func _init(log: LogBuffer) -> void:
 
 
 func tools() -> Array[Dictionary]:
-	return [
+	var definitions: Array[Dictionary] = [
 		{
 			"name": "import_assets",
 			"description": "Make the editor import new or changed asset files (images, models, audio) now, by rescanning the project, and report the errors and warnings it logged. Call this after adding or changing assets, before run_headless or play_scene. `timedOut` is true when the import was still running at the deadline; it carries on in the editor, as it does when the request is cancelled. `truncated` is true when the editor log or the diagnostics limit dropped entries (the counts stay exact). Other editor tools queue behind it and fail after 30 s. Only one job runs at a time (PROJECT_BUSY).",
@@ -44,7 +49,7 @@ func tools() -> Array[Dictionary]:
 		},
 		{
 			"name": "run_headless",
-			"description": "Run the project in a separate headless Godot process and return its captured output and parsed errors. Give `scene` (a .tscn or .scn) or `script` (a .gd run with -s, normally extending SceneTree), or neither for the main scene. Godot exits 0 after script errors, so check `ok`. `frames` quits after that many frames; without it the run lasts until the game quits or `timeoutSec`, when the process group is killed (`timedOut`, exitCode null). A game killed by signal N reports exitCode N, which Godot cannot tell from exit(N). A game that reads stdin waits for the timeout. The run uses the files on disk, so save first: `unsavedScenes` lists what the editor holds unsaved. It waits for a running import first. This runs the project's code (autoloads, scene and script code). Only one job runs at a time (PROJECT_BUSY); other tools keep working meanwhile.",
+			"description": "Run the project in a separate headless Godot process and return its captured output and parsed errors. Give `scene` (a .tscn or .scn) or `script` (a .gd run with -s, normally extending SceneTree), or neither for the main scene. Godot exits 0 after script errors, so check `ok`. `frames` quits after that many frames; without it the run lasts until the game quits or `timeoutSec`, when the process group is killed (`timedOut`, exitCode null). A game killed by signal N reports exitCode N, which Godot cannot tell from exit(N). A game that reads stdin waits for the timeout. The run uses the files on disk, so save first: `unsavedScenes` lists what the editor holds unsaved. It waits for a running import first. This runs the project's code (autoloads, scene and script code). Only one job runs at a time (PROJECT_BUSY); other tools except play_scene keep working meanwhile.",
 			"inputSchema": {
 				"type": "object",
 				"properties": {
@@ -59,6 +64,21 @@ func tools() -> Array[Dictionary]:
 			"handler": run_headless,
 		},
 	]
+	if ResPaths.root_csprojs().size() == 1:
+		definitions.append({
+			"name": "build_dotnet",
+			"description": "Build the project's C# code with `dotnet build` of the one csproj in the project root, in a separate process, and return the parsed MSBuild errors and warnings. Paths under the project come back as res:// paths. `ok` is false after any error or a timeout. `outputTail` holds the end of the raw output, for failures with no diagnostic (a missing SDK, a NuGet restore without network). A build that exits nonzero without printing an error gets a BUILD_FAILED diagnostic. On a timeout the process group is killed (`timedOut`, exitCode null). Only the default Debug configuration refreshes the assembly that the editor and run_headless load; any other configuration only checks that the code compiles. The first build may need network access to restore NuGet packages. This runs the project's build code (MSBuild targets, analyzers, source generators). Only one job runs at a time (PROJECT_BUSY); other tools except play_scene keep working meanwhile.",
+			"inputSchema": {
+				"type": "object",
+				"properties": {
+					"configuration": {"type": "string", "description": "Default Debug, the only one the editor and run_headless use. Another name (letters, digits, `_`, `.` and `-`, at most 64, not starting with `-`) only checks that the code compiles."},
+					"timeoutSec": {"type": "integer", "minimum": 1, "maximum": 540, "description": "Default 300."},
+				},
+				"additionalProperties": false,
+			},
+			"handler": build_dotnet,
+		})
+	return definitions
 
 
 ## True while a job runs, for get_project_info.
@@ -92,6 +112,34 @@ func run_headless(arguments: Dictionary, request: Request) -> Variant:
 	_busy = true
 	request.extend_budget(timeout_ms + BUDGET_SLACK_MS, true)
 	var result: Variant = await _run(launch["args"], timeout_ms, request)
+	_busy = false
+	return result
+
+
+func build_dotnet(arguments: Dictionary, request: Request) -> Variant:
+	var configuration: String = arguments.get("configuration", "Debug")
+	if _CONFIGURATION.search(configuration) == null:
+		return ToolError.fail("INVALID_ARGUMENT", "configuration must be 1-64 letters, digits, `_`, `.` or `-`, and not start with `-`")
+	# The csproj may have come or gone since the editor started.
+	var csprojs := ResPaths.root_csprojs()
+	if csprojs.is_empty():
+		return ToolError.fail("FILE_NOT_FOUND", "There is no .csproj in the project root")
+	if csprojs.size() > 1:
+		return ToolError.fail("AMBIGUOUS_MATCH", "The project root holds %d .csproj files (%s); build_dotnet needs exactly one" % [csprojs.size(), ", ".join(csprojs)])
+	if _busy:
+		return _busy_error()
+	var root := ProjectSettings.globalize_path("res://").rstrip("/")
+	# An absolute csproj path can't read as a switch. env -C gives the child its cwd and variables without changing the editor's own.
+	var command := PackedStringArray([
+		"/usr/bin/env", "-C", root,
+		"DOTNET_NOLOGO=1", "DOTNET_CLI_TELEMETRY_OPTOUT=1", "MSBUILDDISABLENODEREUSE=1",
+		"dotnet", "build", root.path_join(csprojs[0]),
+		"-c", configuration, "-nologo", "-v:q", "-tl:off", "-clp:NoSummary", "-nodeReuse:false", "-p:UseSharedCompilation=false",
+	])
+	var timeout_ms := int(arguments.get("timeoutSec", 300)) * 1000
+	_busy = true
+	request.extend_budget(timeout_ms + BUDGET_SLACK_MS, true)
+	var result: Variant = await _runner.build(command, root, timeout_ms, request)
 	_busy = false
 	return result
 
@@ -219,4 +267,4 @@ func _wait(done: Callable, started: int, timeout_ms: int, request: Request) -> W
 
 
 func _busy_error() -> Dictionary:
-	return ToolError.fail("PROJECT_BUSY", "Another job (run_headless or import_assets) is running; retry when get_project_info reports jobActive false")
+	return ToolError.fail("PROJECT_BUSY", "Another job (run_headless, import_assets or build_dotnet) is running; retry when get_project_info reports jobActive false")

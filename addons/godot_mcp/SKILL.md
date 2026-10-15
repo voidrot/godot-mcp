@@ -11,8 +11,8 @@ The `godot-editor` server is the open Godot editor, serving one project. Its too
 
 ## Start
 
-1. Call `get_project_info`. It returns the project name, main scene, features, autoloads, open and unsaved scenes, the playing scene, and `jobActive`.
-2. If `jobActive` is true, wait before you call `run_headless` or `import_assets`. Otherwise the call fails with `PROJECT_BUSY`.
+1. Call `get_project_info`. It returns the project name, main scene, features, autoloads, `dotnet`, open and unsaved scenes, the playing scene, and `jobActive`. `dotnet` is `{csproj: "res://X.csproj"}` for one root csproj, `{csproj: null, count: N}` for several, and `null` for none. `build_dotnet` exists only in the first case.
+2. If `jobActive` is true, wait before you call `run_headless`, `import_assets`, or `build_dotnet`. Otherwise the call fails with `PROJECT_BUSY`.
 
 ## Know where a change lives
 
@@ -40,6 +40,21 @@ The `godot-editor` server is the open Godot editor, serving one project. Its too
 
 After you add or change images, models, or audio, call `import_assets` before `run_headless` or `play_scene`. It rescans the project and returns `errorCount`, `warningCount`, and `diagnostics` for the import.
 
+## Build C#
+
+`build_dotnet` is listed only when the project root holds exactly one `.csproj`, as it does for a Godot .NET project. With none or several, the tool is absent. Add or remove a `.csproj`, then restart the editor.
+
+1. Edit the `.cs` files.
+2. Call `build_dotnet`. Read `ok` and `diagnostics`. Each has `code` (such as `CS1002`), `file` (a `res://` path when the file is in the project), `line`, `column`, and `message`.
+3. Fix the errors and build again. Run the project with `run_headless` once the build is `ok`.
+
+- Build with the default `Debug` configuration. The editor and `run_headless` load only `.godot/mono/temp/bin/Debug`, so another `configuration` only checks that the code compiles.
+- A failure that prints no error becomes a `BUILD_FAILED` diagnostic. Read `outputTail` for the cause. A missing `dotnet` gives `exitCode` 127 and a message that says so.
+- Only the first line of a multi-line MSBuild message is in `diagnostics`; the rest is in `outputTail`. `truncated` is true when `outputTail` was cut to its last 64 KB.
+- The first build restores NuGet packages and needs network access unless they are already cached.
+- A C# script can be attached with `update_property` only after a build, and the editor needs about a second after `build_dotnet` returns to load it. Until then, `update_property` fails with `INVALID_VALUE`. Retry.
+- The build runs the project's MSBuild targets, analyzers, and source generators. See Code runs in the editor.
+
 ## Tools
 
 | Tool | Does | Arguments |
@@ -63,6 +78,7 @@ After you add or change images, models, or audio, call `import_assets` before `r
 | `validate_script` | Reload a `.gd` file from disk and report its first parse error. | `path` |
 | `run_headless` | Run the project, a scene, or a script in a separate headless process. | `scene` or `script`, `frames`, `userArgs`, `timeoutSec` (default 60, max 540) |
 | `import_assets` | Rescan the project and import new or changed assets. | `timeoutSec` (default 120, max 540) |
+| `build_dotnet` | Build the root `.csproj` with `dotnet build`. Listed only when exactly one exists. | `configuration` (default `Debug`; only Debug refreshes what the editor and `run_headless` use), `timeoutSec` (default 300, max 540) |
 | `get_editor_log` | Read the editor's errors, warnings, and printed output. | `since`, `level`, `limit` (default 200, max 1000) |
 | `play_scene` | Run a scene in the editor's play mode. Output is not captured. | `mode` (`main`, `current`, or `custom`), `path` for `custom` |
 | `stop_scene` | Stop the scene that is playing. | none |
@@ -90,28 +106,28 @@ A tool failure returns `isError: true`, with `structuredContent.error` holding `
 
 | Code | Meaning and fix |
 | --- | --- |
-| `PROJECT_BUSY` | A `run_headless` or `import_assets` job is running. Retry when `jobActive` is false. |
+| `PROJECT_BUSY` | A `run_headless`, `import_assets`, or `build_dotnet` job is running. `play_scene` also gets it while a job runs, because playing starts the editor's own build. Retry when `jobActive` is false. |
 | `IMPORT_IN_PROGRESS` | The editor was still importing when the run's deadline passed. Retry, or call `import_assets` first. |
 | `CANCELLED` | The request was cancelled. A cancelled run is killed. A cancelled import keeps running in the editor. |
 | `NO_SCENE` | Call `open_scene` or `create_scene`. |
 | `NODE_NOT_FOUND`, `PROPERTY_NOT_FOUND` | Check the path with `get_scene_tree`, or the property name with `get_node_properties`. |
 | `INVALID_VALUE`, `UNSUPPORTED_TYPE` | The value doesn't fit the declared type. See Values. |
-| `INVALID_ARGUMENT` | The arguments conflict, for example `scene` with `script`, or `path` with a `play_scene` mode other than `custom`. |
+| `INVALID_ARGUMENT` | The arguments conflict, for example `scene` with `script`, or `path` with a `play_scene` mode other than `custom`. A `build_dotnet` `configuration` must be letters, digits, `_`, `.`, and `-`, at most 64, and not start with `-`. |
 | `INVALID_OPERATION`, `INVALID_MOVE` | The root can't be deleted or moved, or a node can't move into its own subtree. |
 | `DUPLICATE_NAME` | A sibling already has that name. |
 | `INVALID_NAME` | A setting name must be letters, digits, and `_` segments joined by `/`. |
 | `INVALID_TYPE` | `add_node` got a class that is unknown, abstract, editor-only, or not a Node. |
 | `SCENE_CYCLE` | `add_node` with `scene` would nest the edited scene inside itself. |
 | `INVALID_PATH` | A `res://` path failed a rule. It must start with `res://`, and it must be normalized, with no `..`, `\`, `:`, or control characters. It must not be under `res://.godot/`, pass through a symbolic link, or have a `.remap` file. |
-| `FILE_NOT_FOUND`, `FILE_EXISTS`, `DIR_NOT_FOUND` | The file is missing, the new file already exists, or its folder is missing. |
+| `FILE_NOT_FOUND`, `FILE_EXISTS`, `DIR_NOT_FOUND` | The file is missing, the new file already exists, or its folder is missing. `build_dotnet` returns `FILE_NOT_FOUND` when the `.csproj` has been removed since the editor started. |
 | `PROTECTED_PATH`, `PROTECTED_SETTING` | Scripts under `addons/godot_mcp/` can't be written or validated. The `editor/`, `editor_plugins/`, and `godot_mcp/` settings can't be set. |
-| `NO_MATCH`, `AMBIGUOUS_MATCH` | `oldText` is absent, or occurs more than once. Add surrounding text so it matches once. |
+| `NO_MATCH`, `AMBIGUOUS_MATCH` | `oldText` is absent, or occurs more than once. Add surrounding text so it matches once. `build_dotnet` returns `AMBIGUOUS_MATCH` when a second `.csproj` has appeared in the project root. |
 | `TOO_LARGE` | `oldText` is over 64 KB, or a script is over 1 MB. |
 | `UNSAVED_EDITOR_BUFFER` | The script editor holds unsaved changes to the file. Save or revert them in the editor. |
 | `SAVE_FAILED`, `WRITE_FAILED`, `READ_FAILED`, `LOAD_FAILED` | A disk or load problem. Read the message, and check `get_editor_log`. |
 | `UNSAFE_AUTOSAVE` | `play_scene` would auto-save a scene that can't be saved safely. Fix that scene's save problem first. |
 | `PLAY_FAILED`, `STOP_FAILED`, `SCENE_SWITCH_TIMEOUT` | The editor didn't start, stop, or switch within 10 seconds. Check `get_editor_log`. |
-| `SPAWN_FAILED` | `run_headless` couldn't start its process. The message names the cause: GNU `timeout` is not on `PATH`, or the editor's binary couldn't be started. |
+| `SPAWN_FAILED` | `run_headless` or `build_dotnet` couldn't start its process. The message names the cause: GNU `timeout` is not on `PATH`, or the editor's binary couldn't be started. A missing `dotnet` is not this code. It comes back as a `build_dotnet` result with `exitCode` 127 and a `BUILD_FAILED` diagnostic. |
 | `INTERNAL` | A handler hit a script error. Check `get_editor_log`. |
 
 The setup codes (`NOT_LISTENING`, `UNSUPPORTED_PLATFORM`, `FOREIGN_SKILL`, `MISSING_SKILL`, `IS_LINK`, `UNSAFE_PATH`) appear only in `install_agent_skill`. See Setup.
@@ -132,17 +148,18 @@ The setup codes (`NOT_LISTENING`, `UNSUPPORTED_PLATFORM`, `FOREIGN_SKILL`, `MISS
 | Editor log | 1,000 entries kept. `limit` up to 1,000. |
 | Diagnostics | 200 entries, 1,000 characters per line, 120,000 characters in all. |
 | Scene switch, play, and stop | 10 seconds each. |
-| Job timeouts | `run_headless` defaults to 60 seconds, `import_assets` to 120, and both cap at 540. |
+| Job timeouts | `run_headless` defaults to 60 seconds, `import_assets` to 120, `build_dotnet` to 300, and all cap at 540. |
 
 ## Jobs
 
-- `run_headless` and `import_assets` are jobs. Only one job runs at a time, and a second one gets `PROJECT_BUSY` at once.
+- `run_headless`, `import_assets`, and `build_dotnet` are jobs. Only one job runs at a time, and a second one gets `PROJECT_BUSY` at once.
 - `run_headless` waits for a running import first. It uses its own `timeoutSec`. When the time runs out, Godot's process group is killed, and the result has `timedOut: true` and `exitCode: null`.
 - `run_headless` returns `stdoutTail` and `stderrTail`, which are the ends of each stream. `truncated` is true when output was cut.
 - A game killed by signal N reports `exitCode` N, the same as `exit(N)`, so the exit code alone can't tell them apart.
 - A game that reads stdin waits for the timeout, because its stdin never closes.
-- `import_assets` holds the request queue, so other editor tools wait behind it and fail after 30 seconds. `run_headless` lets them run meanwhile.
-- A cancelled request stops waiting. Cancelling a `run_headless` kills its child process.
+- `import_assets` holds the request queue, so other editor tools wait behind it and fail after 30 seconds. `run_headless` lets them run meanwhile, except `play_scene`.
+- `build_dotnet` returns `outputTail`, the end of the raw build output, with stderr last. On a timeout its process group is killed, and the result has `timedOut: true` and `exitCode: null`. Like `run_headless`, it lets other tools run meanwhile, except `play_scene`.
+- A cancelled request stops waiting. Cancelling a `run_headless` or `build_dotnet` kills its child process.
 
 ## Run and play
 
@@ -152,7 +169,7 @@ The setup codes (`NOT_LISTENING`, `UNSUPPORTED_PLATFORM`, `FOREIGN_SKILL`, `MISS
 
 ## Code runs in the editor
 
-Several tools also run project code. `validate_script` and the script writers run the static initializers of `@tool` scripts. A `@tool` script with a `_static_init` runs arbitrary code in the editor. `open_scene` runs the `@tool` scripts in the scenes it loads. `get_node_properties` can run script getters. Setting a property can run a setter. `set_project_setting` changes autoloads and the main scene, which run when the game starts. `run_headless` and `play_scene` run the game.
+Several tools also run project code. `validate_script` and the script writers run the static initializers of `@tool` scripts. A `@tool` script with a `_static_init` runs arbitrary code in the editor. `open_scene` runs the `@tool` scripts in the scenes it loads. `get_node_properties` can run script getters. Setting a property can run a setter. `set_project_setting` changes autoloads and the main scene, which run when the game starts. `run_headless` and `play_scene` run the game. `build_dotnet` runs the project's MSBuild targets, analyzers, and source generators.
 
 There is no sandbox. The bearer token is the only boundary. `addons/godot_mcp/` refuses script writes and validation with `PROTECTED_PATH`. That guards against accidents, not against a hostile caller. Use this server only with projects you trust.
 

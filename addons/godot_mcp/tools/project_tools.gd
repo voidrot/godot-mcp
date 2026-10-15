@@ -28,7 +28,7 @@ func tools() -> Array[Dictionary]:
 	return [
 		{
 			"name": "get_project_info",
-			"description": "Read the project's name, main scene, features and autoloads, the Godot version and binary, and the editor's open, unsaved, edited and playing scenes. Call this first.",
+			"description": "Read the project's name, main scene, features and autoloads, the Godot version and binary, the root csproj (`dotnet`), and the editor's open, unsaved, edited and playing scenes. Call this first.",
 			"inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
 			"annotations": {"readOnlyHint": true},
 			"handler": get_project_info,
@@ -87,6 +87,13 @@ func get_project_info(_arguments: Dictionary, _request: Request) -> Variant:
 	var main_scene: String = ProjectSettings.get_setting("application/run/main_scene", "")
 	var edited := EditorInterface.get_edited_scene_root()
 	var playing := EditorInterface.get_playing_scene()
+	# build_dotnet is listed only for exactly one root csproj; this shows why it is missing.
+	var csprojs := ResPaths.root_csprojs()
+	var dotnet: Variant = null
+	if csprojs.size() == 1:
+		dotnet = {"csproj": "res://" + csprojs[0]}
+	elif csprojs.size() > 1:
+		dotnet = {"csproj": null, "count": csprojs.size()}
 	return {
 		"name": ProjectSettings.get_setting("application/config/name", ""),
 		"godotVersion": Engine.get_version_info()["string"],
@@ -95,6 +102,7 @@ func get_project_info(_arguments: Dictionary, _request: Request) -> Variant:
 		"mainScene": main_scene if main_scene != "" else null,
 		"features": Array(ProjectSettings.get_setting("application/config/features", PackedStringArray())),
 		"autoloads": autoloads,
+		"dotnet": dotnet,
 		"editedScene": edited.scene_file_path if edited != null else null,
 		"openScenes": Array(EditorInterface.get_open_scenes()),
 		"unsavedScenes": Array(EditorInterface.get_unsaved_scenes()),

@@ -12,10 +12,13 @@ const WAIT_MS := 10000
 
 # Held here because handler Callables don't keep it alive.
 var _log: LogBuffer
+# func() -> bool: whether a job (run_headless, import_assets, build_dotnet) is running.
+var _job_active: Callable
 
 
-func _init(log: LogBuffer) -> void:
+func _init(log: LogBuffer, job_active: Callable) -> void:
 	_log = log
+	_job_active = job_active
 
 
 func tools() -> Array[Dictionary]:
@@ -63,6 +66,9 @@ func get_editor_log(arguments: Dictionary, _request: Request) -> Variant:
 
 
 func play_scene(arguments: Dictionary, request: Request) -> Variant:
+	# Playing makes the editor run its own MSBuild, which would compete with a build_dotnet job.
+	if _job_active.call():
+		return ToolError.fail("PROJECT_BUSY", "A job (run_headless, import_assets or build_dotnet) is running; retry when get_project_info reports jobActive false")
 	var mode: String = arguments["mode"]
 	# Running makes the editor save every modified scene, bypassing save_scene's checks.
 	for unsaved in EditorInterface.get_unsaved_scenes():

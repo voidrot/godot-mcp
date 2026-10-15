@@ -19,7 +19,7 @@ This replaces v0 entirely. The v0 Bun server (slices 1–2) is retired once the 
 - [ ] Operator: copy the addon into `lagrange-protocol` and enable it, run Project > Tools > "MCP: install agent skill / show config", paste the entry into `.mcp.json`, accept the trust dialog. `claude mcp list` then shows `godot-editor` connected. Repeat once with `MCP_PROTOCOL_NEGOTIATION=auto` (A10).
 - [ ] Operator GUI smoke test, once: the agent adds a node, the user presses Ctrl+Z and the node is gone, then redo, save, `play_scene`, and the menu item's dialog with its Copy button.
 - [ ] SKILL.md passes the `authoring:create-skill` checks and names every tool `tools/list` returns.
-- [ ] `build_dotnet` e2e: **blocked until the operator installs the .NET 10 runtime** (as v0). Its fake-dotnet unit half runs now.
+- [ ] `build_dotnet` e2e (unblocked: .NET SDK 10.0.112 and runtime 10.0.12 installed): `tests/editor/build.test.ts` runs the fake-dotnet cases and the real build of `fixtures/cs`.
 
 ## Verified facts the plan relies on
 
@@ -136,7 +136,7 @@ tests/fakes/fake-dotnet.sh
 
 | Tool | Input | Output | Godot API | Why |
 |---|---|---|---|---|
-| `get_project_info` | — | `{name, godotVersion, godotPath, addonVersion, mainScene, features[], autoloads{}, dotnet: {csproj}\|null, editedScene, openScenes[], unsavedScenes[], playingScene, scanning, jobActive}` | `ProjectSettings`, `Engine.get_version_info`, `OS.get_executable_path`, `EditorInterface.*`, `is_scanning` | First call. Covers v0 `godot_project_info` and `editor_status`. |
+| `get_project_info` | — | `{name, godotVersion, godotPath, addonVersion, mainScene, features[], autoloads{}, dotnet: {csproj: "res://X.csproj"}\|{csproj: null, count}\|null, editedScene, openScenes[], unsavedScenes[], playingScene, scanning, jobActive}` | `ProjectSettings`, `Engine.get_version_info`, `OS.get_executable_path`, `EditorInterface.*`, `is_scanning` | First call. Covers v0 `godot_project_info` and `editor_status`. |
 | `get_project_settings` | `prefix`, `limit=500` | `{settings, truncated}` | `get_property_list`/`get_setting` | Live values including defaults |
 | `set_project_setting` | `name`, `value` | `{name, previous, value}` | `set_setting` + `save`; refuses `editor_plugins/enabled` and `godot_mcp/*` | Main scene, autoloads |
 | `get_scene_tree` | `rootPath?`, `maxDepth=8`, `maxNodes=2000` | `{scenePath, truncated, root}` | Nodes owned by the root; instance roots not expanded | Core read |
@@ -158,7 +158,7 @@ tests/fakes/fake-dotnet.sh
 | `import_assets` | `timeoutSec=120` | `{ok, durationMs, timedOut, diagnostics, errorCount, warningCount}` | `scan()`, await `!is_scanning()`, Logger capture | Replaces `godot_import` (D44) |
 | `run_headless` | `scene?`\|`script?`, `frames?≥1`, `userArgs?`, `timeoutSec=60` (≤540) | `RunResult` (v0) + `{unsavedScenes[]}` | `execute_with_pipe`, D44–D46 | Replaces `godot_run`: captured output and parsed errors |
 | `install_agent_skill` | `overwrite=false` | `{skillPath, changed, mcpJson}` | `setup.gd` (D40) | Testable setup; refresh after an upgrade |
-| `build_dotnet` *(gated, slice 8)* | `configuration="Debug"`, `timeoutSec=300` | `{ok, exitCode, timedOut, durationMs, diagnostics, errorCount, warningCount, outputTail}` | `env -C` + `dotnet build`, D44 | Replaces v0 `godot_build`. Registered only when one root csproj exists. |
+| `build_dotnet` *(gated, slice 8)* | `configuration="Debug"`, `timeoutSec=300` | `{ok, exitCode, timedOut, durationMs, diagnostics, errorCount, warningCount, outputTail, truncated}` | `env -C` + `dotnet build`, D44 | Replaces v0 `godot_build`. Registered only when one root csproj exists; `get_project_info.dotnet` says why it is missing (`null` for none, `count` for several). Only `Debug` refreshes what the editor and `run_headless` load. `play_scene` returns `PROJECT_BUSY` while any job runs. |
 
 Deferred:
 
@@ -247,7 +247,10 @@ Each slice is one commit. The check is `bun run check` plus anything listed. The
   - `play_scene`'s autosave guard may refuse when an untitled modified scene is open (`save_problem("")`). The editor skips path-less scenes, so skip them too (UNCONFIRMED whether the list holds `""`).
   - `set_project_setting` refuses `uid://` values for `main_scene` and autoloads. Resolve them with `ResourceUID` and check the resolved path (UNCONFIRMED how 4.7 stores them).
   - The test harness leaves its `/tmp/godot-mcp-*` copies behind; 526 had piled up. Clean them up in `afterAll`. Done for the editor harness only (`removeProjects`). The v0 `tests/godot/*` and unit tests (`lock-`, `proc-` directories) still leak; they retire with the TS server in slice 9, so they are left alone.
-  - For slice 8: an unbuilt C# script's `get_instance_base_type()` is likely `""`, so attaching it is refused.
+  - For slice 8: an unbuilt C# script's `get_instance_base_type()` is likely `""`, so attaching it is refused. **Checked in slice 8 (4.7.2.mono, headless editor):** confirmed. `update_property` on `Main.cs` before any build gives `INVALID_VALUE` ("extends nothing valid"). The attach succeeds about 1 s after an out-of-process `build_dotnet` finishes, because the editor picks up the new assembly by itself (polled at 1 s steps; not at 0 s). No code fix; SKILL.md tells the agent to retry. GUI editor UNCONFIRMED.
+  - **Dropped on purpose (slice 8):** v0's e2e "a broken build stops the run" has no v1 counterpart, because `run_headless` has no build phase; the agent calls `build_dotnet` first.
+  - **Parser limits (slice 8):** only the first line of a multi-line MSBuild message is kept (continuation lines have no prefix; they stay in `outputTail`); a missing `dotnet` surfaces as exit 127 with a `BUILD_FAILED` diagnostic that names it, not as `SPAWN_FAILED`, because the spawn of `env` succeeded. `--disable-build-servers` leaves no MSBuild, VBCSCompiler or Razor survivors after a real SDK 10.0.112 build, same as the current flags (which also work on older SDKs), so the flags stay.
+  - **Cold restore needs network (slice 8):** a first `dotnet build` of `fixtures/cs` fetches `Godot.NET.Sdk`, `GodotSharp`, `Godot.SourceGenerators` and the net8.0 reference pack from nuget.org (a cold cache restored in about 3 s). With them in `~/.nuget/packages` the build runs offline (verified with a dead proxy).
 
 ### Slice 5. Headless jobs and parser port (coder-high). **Parity gate.**
 
@@ -300,7 +303,7 @@ Each slice is one commit. The check is `bun run check` plus anything listed. The
   - Every `tools/list` name appears in SKILL.md. The instructions are at most 2,000 characters.
   - The editor loads with no error about the `.md` file (A16).
 
-### Slice 8. `build_dotnet` (coder-high). **e2e blocked until the .NET 10 runtime is installed.**
+### Slice 8. `build_dotnet` (coder-high)
 
 - **Files:** `msbuild_parser.gd`, `build_dotnet` in `tools/job_tools.gd`, `fixtures/cs/**` (v0 D3), `tests/fakes/fake-dotnet.sh`, `tests/editor/build.test.ts`
 - **Depends on:** slice 5
