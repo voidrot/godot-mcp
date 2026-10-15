@@ -1,3 +1,7 @@
+import { runProc } from "../proc.ts";
+
+const VERSION_TIMEOUT_MS = 10_000;
+
 export class GodotNotFoundError extends Error {
   override name = "GodotNotFoundError";
 
@@ -18,15 +22,18 @@ export function resolveGodotBin(
 }
 
 export async function godotVersion(bin: string): Promise<string> {
-  const proc = Bun.spawn([bin, "--version"], {
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
+  let stdout = "";
+  const result = await runProc([bin, "--version"], {
+    timeoutMs: VERSION_TIMEOUT_MS,
+    onStdout: (chunk) => {
+      stdout += chunk;
+    },
   });
-  const [stdout, code] = await Promise.all([
-    new Response(proc.stdout).text(),
-    proc.exited,
-  ]);
-  if (code !== 0) throw new Error(`${bin} --version exited with code ${code}`);
+  if (result.timedOut)
+    throw new Error(
+      `${bin} --version timed out after ${VERSION_TIMEOUT_MS} ms`,
+    );
+  if (result.exitCode !== 0)
+    throw new Error(`${bin} --version exited with code ${result.exitCode}`);
   return stdout.trim();
 }

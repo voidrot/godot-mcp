@@ -1,0 +1,12 @@
+ERROR: pushed error
+   at: push_error (core/variant/variant_utility.cpp:1023)
+   GDScript backtrace (most recent call first):
+       [0] _init (res://diag.gd:8)
+WARNING: pushed warning
+     at: push_warning (core/variant/variant_utility.cpp:1033)
+     GDScript backtrace (most recent call first):
+         [0] _init (res://diag.gd:9)
+SCRIPT ERROR: Out of bounds get index '5' (on base: 'Array')
+          at: _init (res://diag.gd:11)
+          GDScript backtrace (most recent call first):
+              [0] _init (res://diag.gd:11)

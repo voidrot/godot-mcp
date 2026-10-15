@@ -5,6 +5,7 @@ import { z } from "zod";
 import { godotVersion, resolveGodotBin } from "../godot/binary.ts";
 import { type ProjectValue, parseProjectFile } from "../godot/project-file.ts";
 import { resolveProjectDir } from "../paths.ts";
+import { structured } from "./result.ts";
 
 const inputSchema = z.object({
   projectPath: z
@@ -47,7 +48,7 @@ export async function projectInfo(projectPath: string): Promise<ProjectInfo> {
   };
 }
 
-async function dotnetInfo(
+export async function dotnetInfo(
   root: string,
   assemblyName: string | null,
 ): Promise<ProjectInfo["dotnet"]> {
@@ -102,11 +103,7 @@ export function registerProjectInfo(server: McpServer): void {
       outputSchema,
     },
     async ({ projectPath }) => {
-      const info = await projectInfo(projectPath);
-      return {
-        content: [{ type: "text", text: JSON.stringify(info, null, 2) }],
-        structuredContent: info,
-      };
+      return structured(await projectInfo(projectPath));
     },
   );
 }

@@ -44,6 +44,29 @@ describe("stdio server", () => {
     expect(errors).toEqual([]);
   });
 
+  test("a bad projectPath returns an error result and the server survives", async () => {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [server],
+      cwd: repo,
+    });
+    const client = new Client({ name: "godot-mcp-test", version: "0.0.0" });
+    await client.connect(transport);
+    try {
+      for (const projectPath of ["relative/path", "/nonexistent/project"]) {
+        const result = await client.callTool({
+          name: "godot_project_info",
+          arguments: { projectPath },
+        });
+        expect(result.isError).toBe(true);
+      }
+      const { tools } = await client.listTools();
+      expect(tools.map((t) => t.name)).toContain("godot_project_info");
+    } finally {
+      await client.close();
+    }
+  });
+
   test("stdout carries only JSON-RPC frames", async () => {
     const proc = Bun.spawn([process.execPath, server], {
       cwd: repo,
