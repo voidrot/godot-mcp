@@ -3,7 +3,7 @@ extends RefCounted
 
 ## Property values as {type, value} (D35). Primitives, String, StringName and NodePath are native;
 ## a Resource is its path plus class; containers with primitive leaves are JSON; the rest is var_to_str.
-## Output only. Input parsing (slice 3) never uses str_to_var on unchecked text, since it instantiates Objects.
+## Output only; value_decoder.gd parses input.
 
 const MAX_DEPTH := 16
 

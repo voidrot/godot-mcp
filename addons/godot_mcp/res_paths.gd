@@ -13,6 +13,27 @@ const MAX_PATH_CHARS := 4096
 # otherwise a tool failure. Rejects `..`, backslashes, colons, control characters, anything under
 # res://.godot/ (any case), and link components.
 static func check_file(path: String, extensions: Array[String]) -> Dictionary:
+	var problem := _check_syntax(path, extensions)
+	if not problem.is_empty():
+		return problem
+	if not FileAccess.file_exists(path):
+		return ToolError.fail("FILE_NOT_FOUND", "No such file: " + path)
+	return {}
+
+
+# The same rules for a file about to be created: it must not exist, and its directory must.
+static func check_new_file(path: String, extensions: Array[String]) -> Dictionary:
+	var problem := _check_syntax(path, extensions)
+	if not problem.is_empty():
+		return problem
+	if FileAccess.file_exists(path):
+		return ToolError.fail("FILE_EXISTS", "Already exists: " + path)
+	if not DirAccess.dir_exists_absolute(path.get_base_dir()):
+		return ToolError.fail("DIR_NOT_FOUND", "No such directory: " + path.get_base_dir())
+	return {}
+
+
+static func _check_syntax(path: String, extensions: Array[String]) -> Dictionary:
 	if path.length() > MAX_PATH_CHARS:
 		return ToolError.fail("INVALID_PATH", "path is longer than %d characters" % MAX_PATH_CHARS)
 	if not path.begins_with("res://"):
@@ -41,6 +62,8 @@ static func check_file(path: String, extensions: Array[String]) -> Dictionary:
 			return ToolError.fail("INVALID_PATH", "path must not pass through a symbolic link: " + part)
 		if not access.file_exists(current) and not access.dir_exists(current):
 			break
-	if not FileAccess.file_exists(path):
-		return ToolError.fail("FILE_NOT_FOUND", "No such file: " + path)
+	# A <path>.remap file makes the editor load another file's content under this path (verified in
+	# slice 3), so a save would overwrite the original with it.
+	if FileAccess.file_exists(path + ".remap"):
+		return ToolError.fail("INVALID_PATH", "path has a .remap file, which redirects loading")
 	return {}

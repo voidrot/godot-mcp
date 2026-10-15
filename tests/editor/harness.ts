@@ -1,3 +1,4 @@
+import { expect } from "bun:test";
 import { appendFile, cp, readFile } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { join } from "node:path";
@@ -263,4 +264,47 @@ export async function callTool(
   if (parsed.error !== undefined)
     throw new Error(`${name}: JSON-RPC error ${JSON.stringify(parsed.error)}`);
   return parsed.result as ToolResult;
+}
+
+// A tool call that must succeed; returns its structured content.
+export async function ok(
+  editor: Pick<Editor, "port" | "auth">,
+  name: string,
+  args: Record<string, unknown> = {},
+  // biome-ignore lint/suspicious/noExplicitAny: tool outputs are checked field by field in each test
+): Promise<any> {
+  const result = await callTool(editor, name, args);
+  expect(result.structuredContent.error).toBeUndefined();
+  expect(result.isError).toBe(false);
+  return result.structuredContent;
+}
+
+// The error code of a call that must fail as a tool error.
+export async function failure(
+  editor: Pick<Editor, "port" | "auth">,
+  name: string,
+  args: Record<string, unknown> = {},
+): Promise<string> {
+  const result = await callTool(editor, name, args);
+  expect(result.isError).toBe(true);
+  return result.structuredContent.error.code;
+}
+
+let sceneCounter = 0;
+
+// A new empty scene (root "Root", a Node2D) as the edited scene; returns its res:// path.
+export async function freshScene(editor: Editor): Promise<string> {
+  const path = `res://t${++sceneCounter}.tscn`;
+  await ok(editor, "create_scene", {
+    path,
+    rootType: "Node2D",
+    rootName: "Root",
+  });
+  return path;
+}
+
+// Saves the edited scene and returns the file's text.
+export async function saved(editor: Editor, path: string): Promise<string> {
+  await ok(editor, "save_scene");
+  return await readFile(join(editor.dir, path.replace("res://", "")), "utf8");
 }

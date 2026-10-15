@@ -37,6 +37,25 @@ func _append(entry: Dictionary) -> void:
 	_mutex.unlock()
 
 
+# Sequence number of the newest entry, a cursor for errors_since.
+func seq() -> int:
+	_mutex.lock()
+	var newest := _seq
+	_mutex.unlock()
+	return newest
+
+
+# Error-level entries logged after `cursor` (from seq()) that are still in the ring.
+func errors_since(cursor: int) -> Array[Dictionary]:
+	_mutex.lock()
+	var out: Array[Dictionary] = []
+	for entry in _entries:
+		if entry["seq"] > cursor and entry["level"] == "error":
+			out.append(entry.duplicate())
+	_mutex.unlock()
+	return out
+
+
 # Entries after `since` at `level` or above, oldest first, at most `limit`. nextSince is the cursor
 # for the next call; dropped counts entries the ring lost before they were read. A cursor ahead of the
 # newest entry (kept from before a plugin reload) reads from the start, and `reset` says so.
