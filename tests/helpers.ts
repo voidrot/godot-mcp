@@ -8,8 +8,11 @@ export const repo = join(import.meta.dir, "..");
 export const fakeGodot = join(repo, "tests", "fakes", "fake-godot.sh");
 
 // Fixtures are copied so `.godot/` never lands in the repo (plan D4).
-export async function copyFixture(name = "gd"): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "godot-mcp-"));
+export async function copyFixture(
+  name = "gd",
+  prefix = "godot-mcp-",
+): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
   await cp(join(repo, "fixtures", name), dir, { recursive: true });
   return await realpath(dir);
 }

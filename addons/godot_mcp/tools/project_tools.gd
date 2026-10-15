@@ -14,11 +14,14 @@ static var NAME_PATTERN := RegEx.create_from_string("^[A-Za-z0-9_]+(?:/[A-Za-z0-
 var _addon_version: String
 # func() -> bool: whether a job (run_headless, import_assets) is running.
 var _job_active: Callable
+# func(overwrite: bool) -> Dictionary: Setup.install, shared with the Project > Tools menu.
+var _install_skill: Callable
 
 
-func _init(addon_version: String, job_active: Callable) -> void:
+func _init(addon_version: String, job_active: Callable, install_skill: Callable) -> void:
 	_addon_version = addon_version
 	_job_active = job_active
+	_install_skill = install_skill
 
 
 func tools() -> Array[Dictionary]:
@@ -57,6 +60,18 @@ func tools() -> Array[Dictionary]:
 				"additionalProperties": false,
 			},
 			"handler": set_project_setting,
+		},
+		{
+			"name": "install_agent_skill",
+			"description": "Write the godot-mcp agent skill to <project>/.claude/skills/godot-mcp/SKILL.md and return the ready .mcp.json entry for this server, with the url, the headersHelper that reads the token, and the timeout. changed is false when the skill already matches the addon's copy. Refuses a symbolic link in those paths, and a SKILL.md without the godot_mcp marker unless overwrite is true. Never writes .mcp.json.",
+			"inputSchema": {
+				"type": "object",
+				"properties": {
+					"overwrite": {"type": "boolean", "description": "Replace a SKILL.md that has no godot_mcp marker. Default false."},
+				},
+				"additionalProperties": false,
+			},
+			"handler": install_agent_skill,
 		},
 	]
 
@@ -102,6 +117,10 @@ func get_project_settings(arguments: Dictionary, _request: Request) -> Variant:
 	for name in names.slice(0, limit):
 		settings[name] = ValueCodec.encode(ProjectSettings.get_setting(name))
 	return {"settings": settings, "truncated": names.size() > limit}
+
+
+func install_agent_skill(arguments: Dictionary, _request: Request) -> Variant:
+	return _install_skill.call(arguments.get("overwrite", false))
 
 
 func set_project_setting(arguments: Dictionary, _request: Request) -> Variant:

@@ -10,20 +10,25 @@ const NodeTools := preload("tools/node_tools.gd")
 const ProjectTools := preload("tools/project_tools.gd")
 const SceneTools := preload("tools/scene_tools.gd")
 const ScriptTools := preload("tools/script_tools.gd")
+const Setup := preload("setup.gd")
 const TreeTools := preload("tools/tree_tools.gd")
 
 const PORT_SETTING := "godot_mcp/server/port"
 const PORT_FIRST := 6550
 const PORT_LAST := 6649
 const STATE_DIR := "res://.godot/godot_mcp"
+const MENU_ITEM := "MCP: install agent skill / show config"
 
 var _http: HttpServer
 var _mcp: McpServer
 var _log: LogBuffer
 var _jobs: JobTools
+var _setup: Setup
 
 
 func _enter_tree() -> void:
+	add_tool_menu_item(MENU_ITEM, _on_setup_menu)
+	_setup = Setup.new(0)
 	_log = LogBuffer.new()
 	OS.add_logger(_log)
 	var tcp := TCPServer.new()
@@ -39,14 +44,18 @@ func _enter_tree() -> void:
 			push_error("godot_mcp: cannot write %s (%s); the MCP server is not running." % [dir.path_join(file[0]), error_string(err)])
 			return
 	var version := _addon_version()
+	# Only a server that is serving reports its port, so the menu and the tool stay NOT_LISTENING until now.
+	_setup = Setup.new(port)
 	# Callables don't keep RefCounted targets alive, so the plugin holds the MCP server.
 	_jobs = JobTools.new(_log)
-	_mcp = McpServer.new(version, [ProjectTools.new(version, _jobs.job_active), SceneTools.new(_log), NodeTools.new(), ScriptTools.new(_log), TreeTools.new(), EditorTools.new(_log), _jobs])
+	_mcp = McpServer.new(version, [ProjectTools.new(version, _jobs.job_active, _setup.install), SceneTools.new(_log), NodeTools.new(), ScriptTools.new(_log), TreeTools.new(), EditorTools.new(_log), _jobs])
 	_http = HttpServer.new(tcp, port, token, _mcp.handle, _mcp.ingress, _mcp.done)
 	print("godot_mcp: serving http://127.0.0.1:%d/mcp" % port)
 
 
 func _exit_tree() -> void:
+	remove_tool_menu_item(MENU_ITEM)
+	_setup = null
 	if _jobs != null:
 		_jobs.shutdown()
 		_jobs = null
@@ -57,6 +66,10 @@ func _exit_tree() -> void:
 		_http.stop()
 		_http = null
 		_mcp = null
+
+
+func _on_setup_menu() -> void:
+	_setup.show_dialog(EditorInterface.get_base_control())
 
 
 func _process(_delta: float) -> void:

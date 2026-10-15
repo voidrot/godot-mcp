@@ -48,9 +48,12 @@ export async function removeProjects(): Promise<void> {
 }
 
 // A temp copy of fixtures/gd with the addon enabled; call removeProjects in afterAll. port: null
-// leaves the port setting unset.
-export async function prepareProject(port: number | null): Promise<string> {
-  const dir = await copyFixture();
+// leaves the port setting unset. prefix names the temp directory, for paths that need odd characters.
+export async function prepareProject(
+  port: number | null,
+  prefix?: string,
+): Promise<string> {
+  const dir = await copyFixture("gd", prefix);
   projects.push(dir);
   await cp(
     join(repo, "addons", "godot_mcp"),
