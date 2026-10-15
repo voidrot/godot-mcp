@@ -237,3 +237,30 @@ export function buildRequest(
 export function rpc(method: string, params: unknown = {}, id = 1): string {
   return JSON.stringify({ jsonrpc: "2.0", id, method, params });
 }
+
+export interface ToolResult {
+  isError: boolean;
+  // biome-ignore lint/suspicious/noExplicitAny: tool outputs are checked field by field in each test
+  structuredContent: any;
+}
+
+// One tools/call over fetch; the JSON-RPC layer must succeed, a tool failure comes back as isError.
+export async function callTool(
+  editor: Pick<Editor, "port" | "auth">,
+  name: string,
+  args: Record<string, unknown> = {},
+): Promise<ToolResult> {
+  const res = await fetch(`http://127.0.0.1:${editor.port}/mcp`, {
+    method: "POST",
+    headers: {
+      Authorization: editor.auth,
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+    },
+    body: rpc("tools/call", { name, arguments: args }),
+  });
+  const parsed = await res.json();
+  if (parsed.error !== undefined)
+    throw new Error(`${name}: JSON-RPC error ${JSON.stringify(parsed.error)}`);
+  return parsed.result as ToolResult;
+}

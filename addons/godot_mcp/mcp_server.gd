@@ -3,10 +3,14 @@ extends RefCounted
 
 ## JSON-RPC and MCP for the 2025-11-25 era, served statelessly with JSON responses only (D25, D36).
 
+const Request := preload("request.gd")
 const Schema := preload("schema.gd")
 
 const SUPPORTED_VERSIONS: Array[String] = ["2025-11-25", "2025-06-18", "2025-03-26"]
 const MAX_RESPONSE_BYTES := 4 * 1024 * 1024
+# Control characters JSON.stringify leaves raw; \b \t \n \f \r (and \v, see _stringify) it escapes.
+static var _CONTROL := RegEx.create_from_string("[\\x01-\\x07\\x0e-\\x1f]")
+static var _VT_ESCAPE := RegEx.create_from_string("(?<!\\\\)((?:\\\\\\\\)*)\\\\v")
 
 # shortcut: placeholder until slice 7 writes the real text (at most 2,000 characters, D39).
 const INSTRUCTIONS := "This server is the open Godot editor. Call get_project_info first to see the project, the open scenes and the editor state."
@@ -33,7 +37,7 @@ func _register(tools: Array[Dictionary]) -> void:
 
 
 # Answers one POST body. Returns [http_status, body]. A coroutine when a tool handler awaits.
-func handle(body: PackedByteArray, headers: Dictionary) -> Array:
+func handle(body: PackedByteArray, headers: Dictionary, request: Request) -> Array:
 	var json := JSON.new()
 	if json.parse(body.get_string_from_utf8()) != OK:
 		return [400, _error(null, -32700, "Parse error: " + json.get_error_message())]
@@ -65,20 +69,20 @@ func handle(body: PackedByteArray, headers: Dictionary) -> Array:
 	var params: Variant = message.get("params", {})
 	if not params is Dictionary:
 		return [200, _error(id, -32602, "params must be an object")]
-	var outcome: Dictionary = await _dispatch(message["method"], params)
+	var outcome: Dictionary = await _dispatch(message["method"], params, request)
 	if outcome.has("error"):
 		return [200, _error(id, outcome["error"]["code"], outcome["error"]["message"])]
 	if not outcome.has("result"):
 		# A script error during dispatch returns an empty Dictionary.
 		return [200, _error(id, -32603, "Internal error")]
-	var text := JSON.stringify({"jsonrpc": "2.0", "id": id, "result": outcome["result"]})
+	var text := _stringify({"jsonrpc": "2.0", "id": id, "result": outcome["result"]})
 	if text.to_utf8_buffer().size() > MAX_RESPONSE_BYTES:
 		return [200, _error(id, -32603, "Response exceeds %d bytes" % MAX_RESPONSE_BYTES)]
 	return [200, text]
 
 
 # Returns {result} or {error: {code, message}}.
-func _dispatch(method: String, params: Dictionary) -> Dictionary:
+func _dispatch(method: String, params: Dictionary, request: Request) -> Dictionary:
 	match method:
 		"initialize":
 			var requested: Variant = params.get("protocolVersion")
@@ -96,12 +100,12 @@ func _dispatch(method: String, params: Dictionary) -> Dictionary:
 				definitions.append(_tools[name]["definition"])
 			return {"result": {"tools": definitions}}
 		"tools/call":
-			return await _call_tool(params)
+			return await _call_tool(params, request)
 	return {"error": {"code": -32601, "message": "Method not found: " + method}}
 
 
 # A tool returns its structured result, or {error: {code, message}} for a tool failure (D36).
-func _call_tool(params: Dictionary) -> Dictionary:
+func _call_tool(params: Dictionary, request: Request) -> Dictionary:
 	var name: Variant = params.get("name")
 	if not name is String:
 		return {"error": {"code": -32602, "message": "params.name must be a string"}}
@@ -112,12 +116,13 @@ func _call_tool(params: Dictionary) -> Dictionary:
 	var problem := Schema.validate(arguments, tool["definition"]["inputSchema"])
 	if problem != "":
 		return {"error": {"code": -32602, "message": "Invalid arguments for %s: %s" % [name, problem]}}
-	var structured: Variant = await tool["handler"].call(arguments)
-	# A handler that hits a script error returns null or {}; that is a tool failure, never a success.
-	if not structured is Dictionary or structured.is_empty():
+	var structured: Variant = await tool["handler"].call(arguments, request)
+	# A handler that hits a script error returns null (handlers return Variant, so no typed default
+	# stands in); that is a tool failure, never a success. An empty Dictionary is a legitimate result.
+	if not structured is Dictionary:
 		structured = {"error": {"code": "INTERNAL", "message": "Tool %s failed with a script error" % name}}
 	return {"result": {
-		"content": [{"type": "text", "text": JSON.stringify(structured)}],
+		"content": [{"type": "text", "text": _stringify(structured)}],
 		"structuredContent": structured,
 		"isError": structured.has("error"),
 	}}
@@ -127,4 +132,17 @@ static func _error(id: Variant, code: int, message: String, data: Variant = null
 	var error := {"code": code, "message": message}
 	if data != null:
 		error["data"] = data
-	return JSON.stringify({"jsonrpc": "2.0", "id": id, "error": error})
+	return _stringify({"jsonrpc": "2.0", "id": id, "error": error})
+
+
+# JSON.stringify writes U+000B as the invalid escape \v and leaves other control characters raw
+# inside strings (the editor log carries ANSI escapes). Rewrite both as \u00XX.
+static func _stringify(value: Variant) -> String:
+	var text := JSON.stringify(value)
+	# Only a \v preceded by an even run of backslashes is an escape; "\\v" is a backslash and a v.
+	if text.contains("\\v"):
+		text = _VT_ESCAPE.sub(text, "$1\\u000b", true)
+	if _CONTROL.search(text) != null:
+		for code in range(1, 32):
+			text = text.replace(char(code), "\\u%04x" % code)
+	return text

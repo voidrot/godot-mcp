@@ -5,6 +5,8 @@ extends RefCounted
 ## Content-Length framing only, Connection: close on every response, non-blocking writes.
 ## Requests run one at a time from a FIFO (D37).
 
+const Request := preload("request.gd")
+
 const MAX_PEERS := 4
 const MAX_HEADER_BYTES := 16 * 1024
 const MAX_BODY_BYTES := 1024 * 1024
@@ -32,6 +34,8 @@ class Peer:
 	var body_start := 0
 	var body_length := 0
 	var headers := {}
+	# Set once the handler starts.
+	var request: Request = null
 	var outbound := PackedByteArray()
 	var sent := 0
 	# True while request bytes may still be unread, so closing now could reset the connection.
@@ -41,7 +45,8 @@ class Peer:
 var _tcp: TCPServer
 var _port: int
 var _token: PackedByteArray
-# func(body: PackedByteArray, headers: Dictionary) -> [status: int, body: String]; may be a coroutine.
+# func(body: PackedByteArray, headers: Dictionary, request: Request) -> [status: int, body: String];
+# may be a coroutine, which must return soon after request.cancelled is set.
 var _handler: Callable
 var _peers: Array[Peer] = []
 var _queue: Array[Peer] = []
@@ -57,6 +62,7 @@ func _init(tcp: TCPServer, port: int, token: String, handler: Callable) -> void:
 
 func stop() -> void:
 	for peer in _peers:
+		_cancel(peer)
 		peer.tcp.disconnect_from_host()
 	_peers.clear()
 	_queue.clear()
@@ -102,10 +108,10 @@ func _poll_peer(peer: Peer) -> void:
 				_reject(peer, 408, "Request not received within %d ms" % INGRESS_MS)
 		State.QUEUED:
 			if now > peer.deadline:
-				# Frees the FIFO too; a handler that finishes later finds its peer answered and drops the result.
+				# A running handler keeps the FIFO until it sees the cancel at its next resume and returns,
+				# so two handlers never overlap; its result is dropped because the peer is answered.
 				_queue.erase(peer)
-				if _active == peer:
-					_active = null
+				_cancel(peer)
 				_reject(peer, 500, "Request exceeded the %d ms execution budget" % EXECUTION_MS, -32603)
 		State.WRITING:
 			if now > peer.deadline:
@@ -214,8 +220,9 @@ func _check(peer: Peer, method: String, target: String) -> void:
 
 func _run(peer: Peer) -> void:
 	_active = peer
+	peer.request = Request.new()
 	var body := peer.inbound.slice(peer.body_start, peer.body_start + peer.body_length)
-	var response: Variant = await _handler.call(body, peer.headers)
+	var response: Variant = await _handler.call(body, peer.headers, peer.request)
 	if _active == peer:
 		_active = null
 	# Answered already if the execution budget ran out, or gone if the client left.
@@ -260,7 +267,13 @@ func _flush(peer: Peer) -> void:
 		_close(peer)
 
 
+func _cancel(peer: Peer) -> void:
+	if peer.request != null:
+		peer.request.cancelled = true
+
+
 func _close(peer: Peer) -> void:
+	_cancel(peer)
 	peer.tcp.disconnect_from_host()
 	_peers.erase(peer)
 	_queue.erase(peer)

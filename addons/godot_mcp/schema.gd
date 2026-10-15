@@ -2,11 +2,13 @@
 extends RefCounted
 
 ## Checks tool arguments against the JSON Schema subset tool definitions use:
-## type, properties, required, additionalProperties: false, and items.
+## type, properties, required, additionalProperties: false, items, enum, and minimum/maximum on numbers.
 
 
 # Returns "" when value matches schema, otherwise a message naming the offending path.
 static func validate(value: Variant, schema: Dictionary, path := "arguments") -> String:
+	if schema.has("enum") and value not in schema["enum"]:
+		return "%s must be one of: %s" % [path, ", ".join(schema["enum"])]
 	match schema.get("type"):
 		"object":
 			if not value is Dictionary:
@@ -40,8 +42,18 @@ static func validate(value: Variant, schema: Dictionary, path := "arguments") ->
 		"number":
 			if not (value is float or value is int):
 				return "%s must be a number" % path
+			return _check_range(value, schema, path)
 		"integer":
 			# JSON numbers arrive as floats.
 			if not ((value is float and is_finite(value) and value == floorf(value)) or value is int):
 				return "%s must be an integer" % path
+			return _check_range(value, schema, path)
+	return ""
+
+
+static func _check_range(value: float, schema: Dictionary, path: String) -> String:
+	if schema.has("minimum") and value < schema["minimum"]:
+		return "%s must be at least %s" % [path, schema["minimum"]]
+	if schema.has("maximum") and value > schema["maximum"]:
+		return "%s must be at most %s" % [path, schema["maximum"]]
 	return ""

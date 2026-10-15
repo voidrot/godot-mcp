@@ -1,6 +1,9 @@
 @tool
 extends RefCounted
 
+const Request := preload("../request.gd")
+const ValueCodec := preload("../value_codec.gd")
+
 var _addon_version: String
 
 
@@ -17,10 +20,26 @@ func tools() -> Array[Dictionary]:
 			"annotations": {"readOnlyHint": true},
 			"handler": get_project_info,
 		},
+		{
+			"name": "get_project_settings",
+			"description": "Read project settings as {type, value}, defaults included, sorted by name. `truncated` is true when more than `limit` settings match.",
+			"inputSchema": {
+				"type": "object",
+				"properties": {
+					"prefix": {"type": "string", "description": "Only settings whose name starts with this, e.g. \"physics/2d/\"."},
+					"limit": {"type": "integer", "minimum": 1, "maximum": 5000, "description": "Default 500."},
+				},
+				"additionalProperties": false,
+			},
+			"annotations": {"readOnlyHint": true},
+			"handler": get_project_settings,
+		},
 	]
 
 
-func get_project_info(_arguments: Dictionary) -> Dictionary:
+# Handlers return Variant, not Dictionary: a script error in a typed function yields an empty
+# Dictionary, which the server could not tell from a legitimately empty result.
+func get_project_info(_arguments: Dictionary, _request: Request) -> Variant:
 	var autoloads := {}
 	for property in ProjectSettings.get_property_list():
 		var key: String = property["name"]
@@ -43,3 +62,18 @@ func get_project_info(_arguments: Dictionary) -> Dictionary:
 		"playingScene": playing if playing != "" else null,
 		"scanning": EditorInterface.get_resource_filesystem().is_scanning(),
 	}
+
+
+func get_project_settings(arguments: Dictionary, _request: Request) -> Variant:
+	var prefix: String = arguments.get("prefix", "")
+	var limit := int(arguments.get("limit", 500))
+	var names: Array[String] = []
+	for property in ProjectSettings.get_property_list():
+		var name: String = property["name"]
+		if name.contains("/") and name.begins_with(prefix):
+			names.append(name)
+	names.sort()
+	var settings := {}
+	for name in names.slice(0, limit):
+		settings[name] = ValueCodec.encode(ProjectSettings.get_setting(name))
+	return {"settings": settings, "truncated": names.size() > limit}

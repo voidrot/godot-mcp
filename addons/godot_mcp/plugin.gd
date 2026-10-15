@@ -2,8 +2,12 @@
 extends EditorPlugin
 
 const HttpServer := preload("http_server.gd")
+const LogBuffer := preload("log_buffer.gd")
 const McpServer := preload("mcp_server.gd")
+const EditorTools := preload("tools/editor_tools.gd")
+const NodeTools := preload("tools/node_tools.gd")
 const ProjectTools := preload("tools/project_tools.gd")
+const SceneTools := preload("tools/scene_tools.gd")
 
 const PORT_SETTING := "godot_mcp/server/port"
 const PORT_FIRST := 6550
@@ -12,9 +16,12 @@ const STATE_DIR := "res://.godot/godot_mcp"
 
 var _http: HttpServer
 var _mcp: McpServer
+var _log: LogBuffer
 
 
 func _enter_tree() -> void:
+	_log = LogBuffer.new()
+	OS.add_logger(_log)
 	var tcp := TCPServer.new()
 	var port := _listen(tcp)
 	if port == 0:
@@ -29,12 +36,15 @@ func _enter_tree() -> void:
 			return
 	var version := _addon_version()
 	# Callables don't keep RefCounted targets alive, so the plugin holds the MCP server.
-	_mcp = McpServer.new(version, [ProjectTools.new(version)])
+	_mcp = McpServer.new(version, [ProjectTools.new(version), SceneTools.new(), NodeTools.new(), EditorTools.new(_log)])
 	_http = HttpServer.new(tcp, port, token, _mcp.handle)
 	print("godot_mcp: serving http://127.0.0.1:%d/mcp" % port)
 
 
 func _exit_tree() -> void:
+	if _log != null:
+		OS.remove_logger(_log)
+		_log = null
 	if _http != null:
 		_http.stop()
 		_http = null
