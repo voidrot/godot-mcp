@@ -146,9 +146,7 @@ describe("agent skill and instructions", () => {
 
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name)).toContain("get_project_info");
-      // build_dotnet is registered only for a project with one root csproj; build.test.ts runs this
-      // same every-listed-tool-is-named check on such a project.
-      expect(tools.map((t) => t.name)).not.toContain("build_dotnet");
+      expect(tools.map((t) => t.name)).toContain("build_dotnet");
       for (const tool of tools) {
         expect(skill).toContain(`\`${tool.name}\``);
       }

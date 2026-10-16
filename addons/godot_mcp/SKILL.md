@@ -11,7 +11,7 @@ The `godot-editor` server is the open Godot editor, serving one project. Its too
 
 ## Start
 
-1. Call `get_project_info`. It returns the project name, main scene, features, autoloads, `dotnet`, open and unsaved scenes, the playing scene, and `jobActive`. `dotnet` is `{csproj: "res://X.csproj"}` for one root csproj, `{csproj: null, count: N}` for several, and `null` for none. `build_dotnet` exists only in the first case.
+1. Call `get_project_info`. It returns the project name, main scene, features, autoloads, `dotnet`, open and unsaved scenes, the playing scene, and `jobActive`. `dotnet` is `{csproj: "res://X.csproj"}` for one root csproj, `{csproj: null, count: N}` for several, and `null` for none. `build_dotnet` works only in the first case.
 2. If `jobActive` is true, wait before you call `run_headless`, `import_assets`, or `build_dotnet`. Otherwise the call fails with `PROJECT_BUSY`.
 
 ## Know where a change lives
@@ -42,7 +42,7 @@ After you add or change images, models, or audio, call `import_assets` before `r
 
 ## Build C#
 
-`build_dotnet` is listed only when the project root holds exactly one `.csproj`, as it does for a Godot .NET project. With none or several, the tool is absent. Add or remove a `.csproj`, then restart the editor.
+`build_dotnet` builds the one `.csproj` in the project root, as a Godot .NET project has. With none it fails with `FILE_NOT_FOUND`, and with several it fails with `AMBIGUOUS_MATCH`. Adding or removing a `.csproj` takes effect on the next call, with no restart.
 
 1. Edit the `.cs` files.
 2. Call `build_dotnet`. Read `ok` and `diagnostics`. Each has `code` (such as `CS1002`), `file` (a `res://` path when the file is in the project), `line`, `column`, and `message`.
@@ -78,7 +78,7 @@ After you add or change images, models, or audio, call `import_assets` before `r
 | `validate_script` | Reload a `.gd` file from disk and report its first parse error. | `path` |
 | `run_headless` | Run the project, a scene, or a script in a separate headless process. | `scene` or `script`, `frames`, `userArgs`, `timeoutSec` (default 60, max 540) |
 | `import_assets` | Rescan the project and import new or changed assets. | `timeoutSec` (default 120, max 540) |
-| `build_dotnet` | Build the root `.csproj` with `dotnet build`. Listed only when exactly one exists. | `configuration` (default `Debug`; only Debug refreshes what the editor and `run_headless` use), `timeoutSec` (default 300, max 540) |
+| `build_dotnet` | Build the root `.csproj` with `dotnet build`. Needs exactly one in the root. | `configuration` (default `Debug`; only Debug refreshes what the editor and `run_headless` use), `timeoutSec` (default 300, max 540) |
 | `get_editor_log` | Read the editor's errors, warnings, and printed output. | `since`, `level`, `limit` (default 200, max 1000) |
 | `play_scene` | Run a scene in the editor's play mode. Output is not captured. | `mode` (`main`, `current`, or `custom`), `path` for `custom` |
 | `stop_scene` | Stop the scene that is playing. | none |

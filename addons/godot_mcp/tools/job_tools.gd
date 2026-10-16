@@ -4,8 +4,8 @@ extends RefCounted
 ## import_assets, run_headless and build_dotnet (D44, D46). One job at a time per editor: while one
 ## runs, the next gets PROJECT_BUSY at once. run_headless and build_dotnet hand the FIFO back once
 ## validated, since they touch only their own child process (D37); import_assets keeps the FIFO, since
-## it drives the editor's own importer. build_dotnet is registered only when the project root holds
-## exactly one csproj (D15).
+## it drives the editor's own importer. build_dotnet is always listed. Without exactly one root csproj
+## (D15) its call fails with FILE_NOT_FOUND or AMBIGUOUS_MATCH, so a csproj added mid-session needs no restart.
 
 const JobRunner := preload("../job_runner.gd")
 const LogBuffer := preload("../log_buffer.gd")
@@ -63,11 +63,9 @@ func tools() -> Array[Dictionary]:
 			},
 			"handler": run_headless,
 		},
-	]
-	if ResPaths.root_csprojs().size() == 1:
-		definitions.append({
+		{
 			"name": "build_dotnet",
-			"description": "Build the project's C# code with `dotnet build` of the one csproj in the project root, in a separate process, and return the parsed MSBuild errors and warnings. Paths under the project come back as res:// paths. `ok` is false after any error or a timeout. `outputTail` holds the end of the raw output, for failures with no diagnostic (a missing SDK, a NuGet restore without network). A build that exits nonzero without printing an error gets a BUILD_FAILED diagnostic. On a timeout the process group is killed (`timedOut`, exitCode null). Only the default Debug configuration refreshes the assembly that the editor and run_headless load; any other configuration only checks that the code compiles. The first build may need network access to restore NuGet packages. This runs the project's build code (MSBuild targets, analyzers, source generators). Only one job runs at a time (PROJECT_BUSY); other tools except play_scene keep working meanwhile.",
+			"description": "Build the project's C# code with `dotnet build` of the one csproj in the project root, in a separate process, and return the parsed MSBuild errors and warnings. The root must hold exactly one csproj; none gives FILE_NOT_FOUND and several give AMBIGUOUS_MATCH. Paths under the project come back as res:// paths. `ok` is false after any error or a timeout. `outputTail` holds the end of the raw output, for failures with no diagnostic (a missing SDK, a NuGet restore without network). A build that exits nonzero without printing an error gets a BUILD_FAILED diagnostic. On a timeout the process group is killed (`timedOut`, exitCode null). Only the default Debug configuration refreshes the assembly that the editor and run_headless load; any other configuration only checks that the code compiles. The first build may need network access to restore NuGet packages. This runs the project's build code (MSBuild targets, analyzers, source generators). Only one job runs at a time (PROJECT_BUSY); other tools except play_scene keep working meanwhile.",
 			"inputSchema": {
 				"type": "object",
 				"properties": {
@@ -77,7 +75,8 @@ func tools() -> Array[Dictionary]:
 				"additionalProperties": false,
 			},
 			"handler": build_dotnet,
-		})
+		},
+	]
 	return definitions
 
 

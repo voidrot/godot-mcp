@@ -87,7 +87,7 @@ func get_project_info(_arguments: Dictionary, _request: Request) -> Variant:
 	var main_scene: String = ProjectSettings.get_setting("application/run/main_scene", "")
 	var edited := EditorInterface.get_edited_scene_root()
 	var playing := EditorInterface.get_playing_scene()
-	# build_dotnet is listed only for exactly one root csproj; this shows why it is missing.
+	# build_dotnet builds the one root csproj; this shows which one, or why build_dotnet would fail.
 	var csprojs := ResPaths.root_csprojs()
 	var dotnet: Variant = null
 	if csprojs.size() == 1:

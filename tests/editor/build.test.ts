@@ -419,7 +419,7 @@ describe("build_dotnet with a fake dotnet", () => {
 });
 
 describe("build_dotnet registration", () => {
-  test("two root csprojs leave the tool unregistered", async () => {
+  test("two root csprojs keep the tool listed and refuse the call", async () => {
     const port = await freePort();
     const dir = await prepareProject(port);
     await writeFile(join(dir, "A.csproj"), "<Project />\n");
@@ -428,13 +428,14 @@ describe("build_dotnet registration", () => {
     try {
       const names = await toolNames(editor);
       expect(names).toContain("run_headless");
-      expect(names).not.toContain("build_dotnet");
+      expect(names).toContain("build_dotnet");
       expect((await okOn(editor, "get_project_info")).dotnet).toEqual({
         csproj: null,
         count: 2,
       });
-      // An unknown tool is a JSON-RPC -32602.
-      await expect(callTool(editor, "build_dotnet")).rejects.toThrow("-32602");
+      expect(await failureOn(editor, "build_dotnet", {})).toBe(
+        "AMBIGUOUS_MATCH",
+      );
     } finally {
       await editor.stop();
     }
