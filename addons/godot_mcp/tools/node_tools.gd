@@ -29,7 +29,7 @@ func tools() -> Array[Dictionary]:
 		},
 		{
 			"name": "update_property",
-			"description": "Set one editor-visible property of a node in the edited scene, as one undoable action. The value is parsed by the property's declared type. bool, int, float and String take JSON values (an int must be whole). A math type such as Vector2, Rect2 or Color, and a packed numeric array, take a Godot literal string such as \"Vector2(1, 2)\" or \"Color(1, 0, 0, 1)\"; a Color also takes \"#rrggbb\". An Array or Dictionary takes JSON. An Object property takes the res:// path of a resource or null; `script` attaches a script whose base class the node derives from, and `name` renames the node; NodePath properties that point at a renamed node are not updated. Anything else is refused.",
+			"description": "Set one editor-visible property of a node in the edited scene, or `rotation_degrees` (degrees, not radians), as one undoable action. The value is parsed by the property's declared type. bool, int, float and String take JSON values (an int must be whole). A math type such as Vector2, Rect2 or Color, and a packed numeric array, take a Godot literal string such as \"Vector2(1, 2)\" or \"Color(1, 0, 0, 1)\"; a Color also takes \"#rrggbb\". An Array or Dictionary takes JSON. An Object property takes the res:// path of a resource or null; `script` attaches a script whose base class the node derives from, and `name` renames the node; NodePath properties that point at a renamed node are not updated. Anything else is refused.",
 			"inputSchema": {
 				"type": "object",
 				"properties": {

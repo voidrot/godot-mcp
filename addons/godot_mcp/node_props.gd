@@ -7,19 +7,22 @@ const ToolError := preload("tool_error.gd")
 const ValueDecoder := preload("value_decoder.gd")
 
 const BLOCKED_USAGE := PROPERTY_USAGE_GROUP | PROPERTY_USAGE_SUBGROUP | PROPERTY_USAGE_CATEGORY | PROPERTY_USAGE_READ_ONLY
+# Script-facing setters in degrees, with no editor usage. Globals are left out: add_node sets
+# properties before add_child, and a global setter needs the node in the tree.
+const HELPER_PROPERTIES := ["rotation_degrees"]
 
 
 # Returns {value, type} or a tool failure. Only editor-visible, writable properties qualify, plus
-# `name`, which has no editor usage but is how a node is renamed.
+# HELPER_PROPERTIES and `name`, which has no editor usage but is how a node is renamed.
 static func decode(node: Node, property: String, raw: Variant) -> Dictionary:
 	var info := {}
 	for candidate in node.get_property_list():
 		if candidate["name"] == property:
 			info = candidate
 			break
-	var editable: bool = not info.is_empty() and info["usage"] & PROPERTY_USAGE_EDITOR != 0 and info["usage"] & BLOCKED_USAGE == 0
+	var editable: bool = not info.is_empty() and info["usage"] & BLOCKED_USAGE == 0 and (info["usage"] & PROPERTY_USAGE_EDITOR != 0 or property in HELPER_PROPERTIES)
 	if not editable and property != "name":
-		return ToolError.fail("PROPERTY_NOT_FOUND", "%s has no writable editor property named: %s" % [node.get_class(), property])
+		return ToolError.fail("PROPERTY_NOT_FOUND", "%s has no writable property named: %s" % [node.get_class(), property])
 	var decoded := ValueDecoder.decode(raw, info)
 	if decoded.has("error"):
 		return decoded

@@ -64,6 +64,13 @@ const nodeNames = (node: { name: string; children?: unknown[] }): string[] => [
 const treeNames = async (): Promise<string[]> =>
   nodeNames((await ok("get_scene_tree")).root);
 
+// The three numbers of a Vector3 literal, as get_node_properties and update_property return it.
+const vector3 = (literal: string): number[] => {
+  const body = /^Vector3\(([^)]*)\)$/.exec(literal)?.[1];
+  if (body === undefined) throw new Error(`not a Vector3 literal: ${literal}`);
+  return body.split(",").map(Number);
+};
+
 describe("add_node", () => {
   test("a node is saved with its properties and reports an MCP undoAction", async () => {
     const path = await freshScene();
@@ -90,6 +97,25 @@ describe("add_node", () => {
     expect(text).toContain("modulate = Color(1, 0, 0, 1)");
     expect(text).toMatch(/texture = ExtResource\("[^"]+"\)/);
     expect(text).toContain('[ext_resource type="Texture2D"');
+  });
+
+  test("rotation_degrees is taken in degrees and stored in radians", async () => {
+    await freshScene();
+    const added = await ok("add_node", {
+      parentPath: ".",
+      type: "DirectionalLight3D",
+      name: "Sun",
+      properties: { rotation_degrees: "Vector3(-45, 30, 0)" },
+    });
+    const { properties } = await ok("get_node_properties", {
+      path: added.path,
+      names: ["rotation"],
+    });
+    expect(properties.rotation.type).toBe("Vector3");
+    const [x, y, z] = vector3(properties.rotation.value);
+    expect(x).toBeCloseTo(-Math.PI / 4, 5);
+    expect(y).toBeCloseTo(Math.PI / 6, 5);
+    expect(z).toBeCloseTo(0, 5);
   });
 
   test("a default name is made unique, and a nested path is reported", async () => {
@@ -345,6 +371,32 @@ describe("update_property", () => {
     expect(text).not.toContain("texture");
   });
 
+  test("rotation_degrees is set in degrees and reports its previous value in degrees", async () => {
+    await freshScene();
+    await ok("add_node", {
+      parentPath: ".",
+      type: "DirectionalLight3D",
+      name: "Sun",
+    });
+    const result = await ok("update_property", {
+      path: "Sun",
+      property: "rotation_degrees",
+      value: "Vector3(-45, 30, 0)",
+    });
+    expect(result.previous).toEqual({
+      type: "Vector3",
+      value: "Vector3(0, 0, 0)",
+    });
+    expect(result.undoAction).toBe("MCP: set Sun.rotation_degrees");
+    const { properties } = await ok("get_node_properties", {
+      path: "Sun",
+      names: ["rotation"],
+    });
+    const [x, y] = vector3(properties.rotation.value);
+    expect(x).toBeCloseTo(-Math.PI / 4, 5);
+    expect(y).toBeCloseTo(Math.PI / 6, 5);
+  });
+
   test("the codec refuses values that do not match the declared type", async () => {
     const path = await freshScene();
     await ok("add_node", { parentPath: ".", type: "Sprite2D", name: "S" });
@@ -372,6 +424,8 @@ describe("update_property", () => {
       ["texture", 5, "INVALID_VALUE"],
       ["no_such_property", 1, "PROPERTY_NOT_FOUND"],
       ["owner", "x", "PROPERTY_NOT_FOUND"],
+      // A global setter needs the node in the tree, so it is not a helper here.
+      ["global_position", "Vector2(1, 2)", "PROPERTY_NOT_FOUND"],
     ];
     for (const [property, value, code] of bad)
       expect([
