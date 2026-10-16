@@ -217,10 +217,10 @@ describe("C# scripts", () => {
       path: "res://Spaced.cs",
       extends: "Node",
       namespace: "Game.Actors",
-      content: "\tpublic int Speed = 3;",
+      content: "public int Speed = 3;\n\npublic override void _Ready()\n{\n    GD.Print(Speed);\n}\n",
     });
     expect(await onDisk("res://Spaced.cs")).toBe(
-      "using Godot;\n\nnamespace Game.Actors;\n\npublic partial class Spaced : Node\n{\n\tpublic int Speed = 3;\n}\n",
+      "using Godot;\n\nnamespace Game.Actors;\n\npublic partial class Spaced : Node\n{\n    public int Speed = 3;\n\n    public override void _Ready()\n    {\n        GD.Print(Speed);\n    }\n}\n",
     );
   });
 

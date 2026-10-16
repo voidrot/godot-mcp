@@ -51,7 +51,7 @@ func tools() -> Array[Dictionary]:
 					"extends": {"type": "string", "description": "A built-in class such as Node2D. A .gd script may also name a global class_name. For .cs, the C# spelling, which is not always the engine's: GodotObject, GpuParticles2D. It is not checked until build_dotnet."},
 					"className": {"type": "string", "description": "Optional class_name. .gd only (INVALID_ARGUMENT for .cs)."},
 					"namespace": {"type": "string", "description": "Optional namespace such as Game.Actors. .cs only (INVALID_ARGUMENT for .gd)."},
-					"content": {"type": "string", "description": "Script body placed after the extends line, or inside the C# class braces. Max 1 MB."},
+					"content": {"type": "string", "description": "Script body placed after the extends line, or inside the C# class braces, where each non-empty line is indented four spaces (lines inside multi-line string literals too). Max 1 MB."},
 				},
 				"required": ["path", "extends"],
 				"additionalProperties": false,
@@ -149,7 +149,9 @@ func _create_csharp(path: String, base: String, arguments: Dictionary) -> Varian
 	text += "public partial class %s : %s\n{\n" % [class_label, base]
 	var body: String = arguments.get("content", "")
 	if body != "":
-		text += body if body.ends_with("\n") else body + "\n"
+		# One level of four spaces per non-empty line, so multi-line string literals shift too.
+		for line in body.trim_suffix("\n").split("\n"):
+			text += ("    " + line if line.strip_edges() != "" else "") + "\n"
 	text += "}\n"
 	return _write_and_diagnose(path, text, false, null)
 
