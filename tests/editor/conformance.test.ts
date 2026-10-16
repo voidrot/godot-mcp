@@ -147,6 +147,7 @@ describe("agent skill and instructions", () => {
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name)).toContain("get_project_info");
       expect(tools.map((t) => t.name)).toContain("build_dotnet");
+      expect(tools.map((t) => t.name)).toContain("create_dotnet_project");
       for (const tool of tools) {
         expect(skill).toContain(`\`${tool.name}\``);
       }

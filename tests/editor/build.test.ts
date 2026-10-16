@@ -582,3 +582,150 @@ describe("build_dotnet end to end", () => {
     expect(await build()).toMatchObject({ ok: true });
   }, 240_000);
 });
+
+describe("create_dotnet_project", () => {
+  let editor: Editor;
+  let dir: string;
+
+  beforeAll(async () => {
+    const port = await freePort();
+    // The gd fixture is named "GD Fixture", which is not a valid namespace.
+    dir = await prepareProject(port);
+    editor = await startEditor({ dir, port });
+  }, 180_000);
+
+  afterAll(async () => {
+    await editor?.stop();
+  });
+
+  test("rejects a bad targetFramework", async () => {
+    for (const targetFramework of ["net7.0", "net8", "x", "net8.0\n"])
+      expect([
+        targetFramework,
+        await failureOn(editor, "create_dotnet_project", { targetFramework }),
+      ]).toEqual([targetFramework, "INVALID_VALUE"]);
+    expect(await Bun.file(join(dir, "GD Fixture.csproj")).exists()).toBe(false);
+  });
+
+  test("writes the csproj and sln the editor would, and a second call is refused", async () => {
+    const result = await okOn(editor, "create_dotnet_project", {
+      targetFramework: "net10.0",
+    });
+    const info = await okOn(editor, "get_project_info");
+    const sdk = info.godotVersion.match(/^\d+\.\d+\.\d+/)[0];
+    expect(info.godotVersion).toContain("-stable");
+    expect(result).toEqual({
+      csproj: "res://GD Fixture.csproj",
+      solution: "res://GD Fixture.sln",
+      assemblyName: "GD Fixture",
+      sdk,
+    });
+    expect(await readFile(join(dir, "GD Fixture.csproj"), "utf8")).toBe(
+      `<Project Sdk="Godot.NET.Sdk/${sdk}">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework Condition=" '$(GodotTargetPlatform)' == 'android' ">net9.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <RootNamespace>GDFixture</RootNamespace>
+  </PropertyGroup>
+</Project>
+`,
+    );
+    const sln = await readFile(join(dir, "GD Fixture.sln"));
+    expect([...sln.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    const guid = sln.toString().match(/csproj", "\{([0-9A-F-]{36})\}"/)?.[1];
+    expect(guid).toMatch(
+      /^[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$/,
+    );
+    const config = (name: string) =>
+      `\t\t{${guid}}.${name}|Any CPU.ActiveCfg = ${name}|Any CPU\n\t\t{${guid}}.${name}|Any CPU.Build.0 = ${name}|Any CPU\n`;
+    expect(sln.subarray(3).toString()).toBe(
+      `Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 2012
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GD Fixture", "GD Fixture.csproj", "{${guid}}"
+EndProject
+Global
+\tGlobalSection(SolutionConfigurationPlatforms) = preSolution
+\tDebug|Any CPU = Debug|Any CPU
+\tExportDebug|Any CPU = ExportDebug|Any CPU
+\tExportRelease|Any CPU = ExportRelease|Any CPU
+\tEndGlobalSection
+\tGlobalSection(ProjectConfigurationPlatforms) = postSolution
+${config("Debug")}${config("ExportDebug")}${config("ExportRelease")}\tEndGlobalSection
+EndGlobal
+`,
+    );
+    expect((await okOn(editor, "get_project_info")).dotnet).toEqual({
+      csproj: "res://GD Fixture.csproj",
+    });
+
+    expect(await failureOn(editor, "create_dotnet_project", {})).toBe(
+      "FILE_EXISTS",
+    );
+    // With the csproj gone, the existing sln still refuses.
+    await rm(join(dir, "GD Fixture.csproj"));
+    expect(await failureOn(editor, "create_dotnet_project", {})).toBe(
+      "FILE_EXISTS",
+    );
+    expect(await Bun.file(join(dir, "GD Fixture.csproj")).exists()).toBe(false);
+  }, 60_000);
+});
+
+// Needs the same dotnet and NuGet cache as the end-to-end build above.
+describe("create_dotnet_project end to end", () => {
+  let editor: Editor;
+
+  beforeAll(async () => {
+    const version = Bun.which("dotnet")
+      ? await Bun.spawn(["dotnet", "--version"], {
+          stdout: "ignore",
+          stderr: "ignore",
+        }).exited
+      : 1;
+    if (version !== 0)
+      throw new Error(
+        ".NET runtime missing for SDK; install dotnet-runtime (operator)",
+      );
+    const port = await freePort();
+    editor = await startEditor({ dir: await prepareProject(port), port });
+  }, 180_000);
+
+  afterAll(async () => {
+    await editor?.stop();
+  });
+
+  test("a created project builds with a created script, and the script then attaches", async () => {
+    await okOn(editor, "set_project_setting", {
+      name: "dotnet/project/assembly_name",
+      value: "E2eGame",
+    });
+    expect(await okOn(editor, "create_dotnet_project", {})).toMatchObject({
+      csproj: "res://E2eGame.csproj",
+      solution: "res://E2eGame.sln",
+    });
+    await okOn(editor, "create_script", {
+      path: "res://Hero.cs",
+      extends: "Node",
+      namespace: "Game",
+      content: "\tpublic int Hp = 3;",
+    });
+    expect(await okOn(editor, "build_dotnet", {})).toMatchObject({
+      ok: true,
+      errorCount: 0,
+      diagnostics: [],
+    });
+    await okOn(editor, "create_scene", {
+      path: "res://e2e.tscn",
+      rootType: "Node",
+      rootName: "Root",
+    });
+    await waitFor(async () => {
+      const result = await callTool(editor, "update_property", {
+        path: ".",
+        property: "script",
+        value: "res://Hero.cs",
+      });
+      return result.structuredContent.error === undefined ? true : undefined;
+    }, 20_000);
+  }, 300_000);
+});

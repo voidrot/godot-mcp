@@ -1,6 +1,7 @@
 @tool
 extends RefCounted
 
+const DotnetProject := preload("../dotnet_project.gd")
 const Request := preload("../request.gd")
 const ToolError := preload("../tool_error.gd")
 const ResPaths := preload("../res_paths.gd")
@@ -9,6 +10,7 @@ const ValueDecoder := preload("../value_decoder.gd")
 
 const PROTECTED_PREFIXES: Array[String] = ["editor/", "editor_plugins/", "godot_mcp/"]
 
+static var TARGET_FRAMEWORK := RegEx.create_from_string("^net(\\d+)\\.\\d+\\z")
 static var NAME_PATTERN := RegEx.create_from_string("^[A-Za-z0-9_]+(?:/[A-Za-z0-9_]+)+\\z")
 
 var _addon_version: String
@@ -32,6 +34,16 @@ func tools() -> Array[Dictionary]:
 			"inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
 			"annotations": {"readOnlyHint": true},
 			"handler": get_project_info,
+		},
+		{
+			"name": "create_dotnet_project",
+			"description": "Create the root .csproj and the .sln for a Godot .NET project, as the editor's Create C# solution does: Godot.NET.Sdk matching this editor, net8.0 (or `targetFramework`), `EnableDynamicLoading`, and Debug, ExportDebug and ExportRelease solution configs. Names follow `dotnet/project/assembly_name` (else the project name) and `dotnet/project/solution_directory`. Refuses when the root already holds a .csproj or the .sln exists (FILE_EXISTS), and in an editor without .NET support (DOTNET_UNAVAILABLE). Build it with build_dotnet.",
+			"inputSchema": {
+				"type": "object",
+				"properties": {"targetFramework": {"type": "string", "description": "A target framework moniker, net8.0 or later such as net9.0 or net10.0. Default net8.0."}},
+				"additionalProperties": false,
+			},
+			"handler": create_dotnet_project,
 		},
 		{
 			"name": "get_project_settings",
@@ -110,6 +122,48 @@ func get_project_info(_arguments: Dictionary, _request: Request) -> Variant:
 		"scanning": EditorInterface.get_resource_filesystem().is_scanning() or EditorInterface.get_resource_filesystem().is_importing(),
 		"jobActive": _job_active.call(),
 	}
+
+
+func create_dotnet_project(arguments: Dictionary, _request: Request) -> Variant:
+	if not ClassDB.class_exists("CSharpScript"):
+		return ToolError.fail("DOTNET_UNAVAILABLE", "This editor build has no .NET support, so it could not build or load a C# project")
+	var framework: String = arguments.get("targetFramework", "net8.0")
+	var framework_match := TARGET_FRAMEWORK.search(framework)
+	if framework_match == null or int(framework_match.get_string(1)) < 8:
+		return ToolError.fail("INVALID_VALUE", "targetFramework must look like net8.0, and be net8.0 or later")
+	var existing := ResPaths.root_csprojs()
+	if not existing.is_empty():
+		return ToolError.fail("FILE_EXISTS", "The project root already holds " + existing[0])
+	var name := DotnetProject.assembly_name()
+	var sln_dir := DotnetProject.solution_dir()
+	if sln_dir.is_empty():
+		return ToolError.fail("INVALID_VALUE", "dotnet/project/solution_directory must be inside the project")
+	if name.contains("\""):
+		return ToolError.fail("INVALID_VALUE", "The assembly name must not contain a double quote: " + name)
+	var csproj := "res://%s.csproj" % name
+	var sln := "%s%s.sln" % [sln_dir, name]
+	var problem := ResPaths.check_new_file(csproj, ["csproj"])
+	if problem.is_empty():
+		problem = ResPaths.check_new_file(sln, ["sln"])
+	if not problem.is_empty():
+		return problem
+	# The csproj sits in the root, so the sln reaches it by climbing out of its own folder.
+	var up := "" if sln_dir == "res://" else "../".repeat(sln_dir.trim_prefix("res://").trim_suffix("/").count("/") + 1)
+	var csproj_bytes := DotnetProject.csproj_text(name, framework).to_utf8_buffer()
+	# Godot writes the sln as UTF-8 with a BOM and the csproj without one.
+	var sln_bytes := PackedByteArray([0xEF, 0xBB, 0xBF])
+	sln_bytes.append_array(DotnetProject.sln_text(name, DotnetProject.new_guid(), up + name + ".csproj").to_utf8_buffer())
+	var err := _write(csproj, csproj_bytes)
+	if err == OK:
+		err = _write(sln, sln_bytes)
+		if err != OK:
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(csproj))
+	if err != OK:
+		return ToolError.fail("WRITE_FAILED", "Could not write the .NET project files (%s); partial files were removed" % error_string(err))
+	var files := EditorInterface.get_resource_filesystem()
+	files.update_file(csproj)
+	files.update_file(sln)
+	return {"csproj": csproj, "solution": sln, "assemblyName": name, "sdk": DotnetProject.sdk_version()}
 
 
 func get_project_settings(arguments: Dictionary, _request: Request) -> Variant:
@@ -195,6 +249,21 @@ func _checked_target(target: String, extensions: Array[String]) -> Dictionary:
 			return ToolError.fail("INVALID_VALUE", "No resource has the id " + target.left(80))
 		target = ResourceUID.get_id_path(id)
 	return ResPaths.check_file(target, extensions)
+
+
+func _write(path: String, bytes: PackedByteArray) -> Error:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return FileAccess.get_open_error()
+	file.store_buffer(bytes)
+	var err := file.get_error()
+	file.close()
+	# Godot buffers small writes until close, and close ignores a failed flush, so verify what landed.
+	if err == OK and FileAccess.get_file_as_bytes(path) != bytes:
+		err = ERR_FILE_CORRUPT
+	if err != OK:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	return err
 
 
 func _has_control_character(value: Variant) -> bool:

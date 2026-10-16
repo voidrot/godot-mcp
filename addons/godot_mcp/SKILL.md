@@ -36,6 +36,8 @@ The `godot-editor` server is the open Godot editor, serving one project. Its too
 3. Attach it with `update_property`, using `property: "script"` and `value` set to the script's `res://` path. Then call `save_scene`.
 4. After a later change, `edit_script` returns diagnostics too. Call `validate_script` to recheck a file alone.
 
+For C#, give `create_script` a `.cs` path. The file name must be an identifier, because it names the class. The tool writes `using Godot;`, an optional file-scoped `namespace` (`namespace: "Game.Actors"`), and `public partial class <file name> : <extends>`, with `content` as the class body. `extends` must be a built-in class, not a GDScript `class_name`. `className` is refused for `.cs`, and `namespace` for `.gd`. A `.cs` write returns `diagnostics: []` and a `note`, because only `build_dotnet` finds C# errors. `validate_script` is `.gd` only.
+
 ## Add assets
 
 After you add or change images, models, or audio, call `import_assets` before `run_headless` or `play_scene`. It rescans the project and returns `errorCount`, `warningCount`, and `diagnostics` for the import.
@@ -44,7 +46,9 @@ After you add or change images, models, or audio, call `import_assets` before `r
 
 `build_dotnet` builds the one `.csproj` in the project root, as a Godot .NET project has. With none it fails with `FILE_NOT_FOUND`, and with several it fails with `AMBIGUOUS_MATCH`. Adding or removing a `.csproj` takes effect on the next call, with no restart.
 
-1. Edit the `.cs` files.
+In a project with no `.csproj`, call `create_dotnet_project` first. It writes the root `.csproj` and the `.sln` the way the editor's Create C# solution does, and returns their `res://` paths. The names come from `dotnet/project/assembly_name` (else the project name), and the `.sln` goes in `dotnet/project/solution_directory`. `targetFramework` defaults to `net8.0`. It fails with `FILE_EXISTS` when the root holds a `.csproj` or the `.sln` exists, and with `DOTNET_UNAVAILABLE` in an editor without .NET support.
+
+1. Edit the `.cs` files, or make them with `create_script`.
 2. Call `build_dotnet`. Read `ok` and `diagnostics`. Each has `code` (such as `CS1002`), `file` (a `res://` path when the file is in the project), `line`, `column`, and `message`.
 3. Fix the errors and build again. Run the project with `run_headless` once the build is `ok`.
 
@@ -52,7 +56,7 @@ After you add or change images, models, or audio, call `import_assets` before `r
 - A failure that prints no error becomes a `BUILD_FAILED` diagnostic. Read `outputTail` for the cause. A missing `dotnet` gives `exitCode` 127 and a message that says so.
 - Only the first line of a multi-line MSBuild message is in `diagnostics`; the rest is in `outputTail`. `truncated` is true when `outputTail` was cut to its last 64 KB.
 - The first build restores NuGet packages and needs network access unless they are already cached.
-- A C# script can be attached with `update_property` only after a build, and the editor needs about a second after `build_dotnet` returns to load it. Until then, `update_property` fails with `INVALID_VALUE`. Retry.
+- A C# script can be attached with `update_property` only after a build (a new or changed script needs one), and the editor needs about a second after `build_dotnet` returns to load it. Until then, `update_property` fails with `INVALID_VALUE`. Retry.
 - The build runs the project's MSBuild targets, analyzers, and source generators. See Code runs in the editor.
 
 ## Tools
@@ -73,11 +77,12 @@ After you add or change images, models, or audio, call `import_assets` before `r
 | `get_node_properties` | Read a node's editor-visible properties. | `path`, `names` |
 | `update_property` | Set one property. `script` attaches a script, and `name` renames the node. | `path`, `property`, `value` |
 | `read_script` | Read a `.gd` or `.cs` file as text. | `path` |
-| `create_script` | Create a `.gd` file and return its diagnostics. | `path`, `extends`, `className`, `content` |
-| `edit_script` | Replace one exact `oldText` with `newText`, or the whole file with `content`. | `path`, and `oldText` and `newText` or `content` |
+| `create_script` | Create a `.gd` or `.cs` file. A `.gd` file returns its diagnostics; a `.cs` file returns none (see `build_dotnet`). | `path`, `extends`, `className` (`.gd`), `namespace` (`.cs`), `content` |
+| `edit_script` | Replace one exact `oldText` with `newText`, or the whole file with `content`, in a `.gd` or `.cs` file. | `path`, and `oldText` and `newText` or `content` |
 | `validate_script` | Reload a `.gd` file from disk and report its first parse error. | `path` |
 | `run_headless` | Run the project, a scene, or a script in a separate headless process. | `scene` or `script`, `frames`, `userArgs`, `timeoutSec` (default 60, max 540) |
 | `import_assets` | Rescan the project and import new or changed assets. | `timeoutSec` (default 120, max 540) |
+| `create_dotnet_project` | Write the root `.csproj` and the `.sln`, as Create C# solution does. Refuses an existing one. | `targetFramework` (default `net8.0`) |
 | `build_dotnet` | Build the root `.csproj` with `dotnet build`. Needs exactly one in the root. | `configuration` (default `Debug`; only Debug refreshes what the editor and `run_headless` use), `timeoutSec` (default 300, max 540) |
 | `get_editor_log` | Read the editor's errors, warnings, and printed output. | `since`, `level`, `limit` (default 200, max 1000) |
 | `play_scene` | Run a scene in the editor's play mode. Output is not captured. | `mode` (`main`, `current`, or `custom`), `path` for `custom` |
@@ -113,6 +118,7 @@ A tool failure returns `isError: true`, with `structuredContent.error` holding `
 | `NODE_NOT_FOUND`, `PROPERTY_NOT_FOUND` | Check the path with `get_scene_tree`, or the property name with `get_node_properties`. |
 | `INVALID_VALUE`, `UNSUPPORTED_TYPE` | The value doesn't fit the declared type. See Values. |
 | `INVALID_ARGUMENT` | The arguments conflict, for example `scene` with `script`, or `path` with a `play_scene` mode other than `custom`. A `build_dotnet` `configuration` must be letters, digits, `_`, `.`, and `-`, at most 64, and not start with `-`. |
+| `DOTNET_UNAVAILABLE` | `create_dotnet_project` ran in an editor build without .NET support. |
 | `INVALID_OPERATION`, `INVALID_MOVE` | The root can't be deleted or moved, or a node can't move into its own subtree. |
 | `DUPLICATE_NAME` | A sibling already has that name. |
 | `INVALID_NAME` | A setting name must be letters, digits, and `_` segments joined by `/`. |
