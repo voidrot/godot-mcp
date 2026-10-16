@@ -1,7 +1,7 @@
 # 003: rotation_degrees and other non-editor properties are refused
 
 - **Project:** orbital-runtime (Godot 4.7.2 mono, .NET 10)
-- **Status:** fixed (`fix(addon): let rotation_degrees through the editor-property check`)
+- **Status:** fixed (`fix(addon): let rotation_degrees through the editor-property check`). Only `rotation_degrees` is allowed. The `global_*` helpers stay refused, because add_node sets properties before the node joins the tree.
 
 ## Goal
 
