@@ -48,7 +48,7 @@ func tools() -> Array[Dictionary]:
 				"type": "object",
 				"properties": {
 					"path": {"type": "string", "description": "res:// path ending in .gd or .cs. A .cs file name must be an identifier, because the class takes it."},
-					"extends": {"type": "string", "description": "A built-in class such as Node2D. A .gd script may also name a global class_name."},
+					"extends": {"type": "string", "description": "A built-in class such as Node2D. A .gd script may also name a global class_name. For .cs, the C# spelling, which is not always the engine's: GodotObject, GpuParticles2D. It is not checked until build_dotnet."},
 					"className": {"type": "string", "description": "Optional class_name. .gd only (INVALID_ARGUMENT for .cs)."},
 					"namespace": {"type": "string", "description": "Optional namespace such as Game.Actors. .cs only (INVALID_ARGUMENT for .gd)."},
 					"content": {"type": "string", "description": "Script body placed after the extends line, or inside the C# class braces. Max 1 MB."},
@@ -126,16 +126,19 @@ func create_script(arguments: Dictionary, _request: Request) -> Variant:
 	return _write_and_diagnose(path, text, false, null)
 
 
-# The class is named after the file, as Godot requires. Only ClassDB classes can be the base: a C#
-# class deriving from another script's global class would also need that class's namespace.
+# The class is named after the file, as Godot requires. The base is written as given and left to the
+# compiler: Godot's C# bindings rename classes (GpuParticles2D, GodotObject), and porting that is not worth it.
 func _create_csharp(path: String, base: String, arguments: Dictionary) -> Variant:
 	if arguments.has("className"):
 		return ToolError.fail("INVALID_ARGUMENT", "className does not apply to .cs scripts; the class is named after the file")
 	var class_label := path.get_file().get_basename()
 	if _IDENTIFIER.search(class_label) == null:
 		return ToolError.fail("INVALID_PATH", "A .cs file name must be an identifier, because the class takes it: " + class_label)
-	if _IDENTIFIER.search(base) == null or not ClassDB.class_exists(base):
-		return ToolError.fail("INVALID_VALUE", "extends must name a built-in class for a .cs script: " + base)
+	for segment in base.split(".", true):
+		if _IDENTIFIER.search(segment) == null:
+			return ToolError.fail("INVALID_VALUE", "extends must be a C# type name: identifiers joined by dots: " + base)
+	if Engine.has_singleton(base):
+		return ToolError.fail("INVALID_VALUE", "%s is a static class in C#, so it cannot be a base" % base)
 	var text := "using Godot;\n\n"
 	if arguments.has("namespace"):
 		var namespace_name: String = arguments["namespace"]

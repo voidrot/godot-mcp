@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+  mkdir,
   mkdtemp,
   readdir,
   readFile,
@@ -671,6 +672,69 @@ EndGlobal
   }, 60_000);
 });
 
+describe("create_dotnet_project and the dotnet settings", () => {
+  let editor: Editor;
+  let dir: string;
+
+  beforeAll(async () => {
+    const port = await freePort();
+    dir = await prepareProject(port);
+    await mkdir(join(dir, "sub"));
+    editor = await startEditor({ dir, port });
+  }, 180_000);
+
+  afterAll(async () => {
+    await editor?.stop();
+  });
+
+  const set = (name: string, value: string) =>
+    okOn(editor, "set_project_setting", {
+      name: `dotnet/project/${name}`,
+      value,
+    });
+  const create = () => failureOn(editor, "create_dotnet_project", {});
+
+  test("an assembly name with a slash is refused and writes nothing", async () => {
+    await set("assembly_name", "Sub/Game");
+    try {
+      expect(await create()).toBe("INVALID_VALUE");
+    } finally {
+      await set("assembly_name", "Zed");
+    }
+    expect(await Bun.file(join(dir, "Sub", "Game.csproj")).exists()).toBe(
+      false,
+    );
+  });
+
+  test("a solution directory outside the project is refused", async () => {
+    await set("solution_directory", "../out");
+    try {
+      expect(await create()).toBe("INVALID_VALUE");
+    } finally {
+      await set("solution_directory", "");
+    }
+    expect(await Bun.file(join(dir, "Zed.csproj")).exists()).toBe(false);
+  });
+
+  test("a solution directory inside the project holds the sln, which reaches the csproj with ..\\", async () => {
+    await set("solution_directory", "sub");
+    try {
+      const result = await okOn(editor, "create_dotnet_project", {});
+      expect(result).toMatchObject({
+        csproj: "res://Zed.csproj",
+        solution: "res://sub/Zed.sln",
+      });
+    } finally {
+      await set("solution_directory", "");
+      await set("assembly_name", "");
+    }
+    expect(await Bun.file(join(dir, "Zed.csproj")).exists()).toBe(true);
+    expect(await readFile(join(dir, "sub", "Zed.sln"), "utf8")).toContain(
+      '= "Zed", "..\\Zed.csproj", "{',
+    );
+  });
+});
+
 // Needs the same dotnet and NuGet cache as the end-to-end build above.
 describe("create_dotnet_project end to end", () => {
   let editor: Editor;
@@ -708,6 +772,11 @@ describe("create_dotnet_project end to end", () => {
       extends: "Node",
       namespace: "Game",
       content: "\tpublic int Hp = 3;",
+    });
+    // The C# name of GPUParticles2D differs from the engine's.
+    await okOn(editor, "create_script", {
+      path: "res://Sparks.cs",
+      extends: "GpuParticles2D",
     });
     expect(await okOn(editor, "build_dotnet", {})).toMatchObject({
       ok: true,

@@ -226,19 +226,15 @@ describe("C# scripts", () => {
 
   test("bad arguments are refused and write nothing", async () => {
     const base = { path: "res://Refused.cs", extends: "Node" };
-    await ok("create_script", {
-      path: "res://cs_probe.gd",
-      extends: "Node",
-      className: "CsProbe",
-    });
     const cases: [Record<string, unknown>, string][] = [
       [{ ...base, className: "Other" }, "INVALID_ARGUMENT"],
       [{ ...base, namespace: "A..B" }, "INVALID_VALUE"],
       [{ ...base, namespace: "A.1B" }, "INVALID_VALUE"],
       [{ ...base, namespace: "A;\nclass X {}" }, "INVALID_VALUE"],
-      [{ ...base, extends: "NoSuchClass" }, "INVALID_VALUE"],
-      // A GDScript class_name is not a C# base.
-      [{ ...base, extends: "CsProbe" }, "INVALID_VALUE"],
+      [{ ...base, extends: "Node\nfunc x(): pass" }, "INVALID_VALUE"],
+      [{ ...base, extends: "A..B" }, "INVALID_VALUE"],
+      // An engine singleton is a static class in C#.
+      [{ ...base, extends: "Input" }, "INVALID_VALUE"],
       [{ ...base, path: "res://Not-An-Identifier.cs" }, "INVALID_PATH"],
       [{ ...base, path: "res://1Bad.cs" }, "INVALID_PATH"],
       [
@@ -257,6 +253,23 @@ describe("C# scripts", () => {
       ]);
     expect(await Bun.file(join(editor.dir, "Refused.cs")).exists()).toBe(false);
     expect(await Bun.file(join(editor.dir, "refused.gd")).exists()).toBe(false);
+  });
+
+  test("extends is written as the C# spelling and left to the compiler", async () => {
+    await ok("create_script", {
+      path: "res://Renamed.cs",
+      extends: "GodotObject",
+    });
+    expect(await onDisk("res://Renamed.cs")).toBe(
+      "using Godot;\n\npublic partial class Renamed : GodotObject\n{\n}\n",
+    );
+    await ok("create_script", {
+      path: "res://Qualified.cs",
+      extends: "Godot.GpuParticles2D",
+    });
+    expect(await onDisk("res://Qualified.cs")).toContain(
+      ": Godot.GpuParticles2D\n",
+    );
   });
 
   test("an existing .cs path is refused", async () => {

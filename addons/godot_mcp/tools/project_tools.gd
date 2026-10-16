@@ -141,6 +141,8 @@ func create_dotnet_project(arguments: Dictionary, _request: Request) -> Variant:
 	if name.contains("\""):
 		return ToolError.fail("INVALID_VALUE", "The assembly name must not contain a double quote: " + name)
 	var csproj := "res://%s.csproj" % name
+	if csproj.get_base_dir() != "res://":
+		return ToolError.fail("INVALID_VALUE", "The assembly name must not contain a /, since the csproj belongs in the project root: " + name)
 	var sln := "%s%s.sln" % [sln_dir, name]
 	var problem := ResPaths.check_new_file(csproj, ["csproj"])
 	if problem.is_empty():
