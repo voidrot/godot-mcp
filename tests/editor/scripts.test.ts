@@ -197,6 +197,110 @@ describe("create_script", () => {
   });
 });
 
+describe("C# scripts", () => {
+  const NOTE = "C# diagnostics come from build_dotnet";
+
+  test("create_script writes a partial class named after the file, with no diagnostics", async () => {
+    expect(
+      await ok("create_script", {
+        path: "res://Plain.cs",
+        extends: "Node2D",
+      }),
+    ).toEqual({ path: "res://Plain.cs", diagnostics: [], note: NOTE });
+    expect(await onDisk("res://Plain.cs")).toBe(
+      "using Godot;\n\npublic partial class Plain : Node2D\n{\n}\n",
+    );
+  });
+
+  test("a namespace becomes a file-scoped declaration, and content is the class body", async () => {
+    await ok("create_script", {
+      path: "res://Spaced.cs",
+      extends: "Node",
+      namespace: "Game.Actors",
+      content: "\tpublic int Speed = 3;",
+    });
+    expect(await onDisk("res://Spaced.cs")).toBe(
+      "using Godot;\n\nnamespace Game.Actors;\n\npublic partial class Spaced : Node\n{\n\tpublic int Speed = 3;\n}\n",
+    );
+  });
+
+  test("bad arguments are refused and write nothing", async () => {
+    const base = { path: "res://Refused.cs", extends: "Node" };
+    await ok("create_script", {
+      path: "res://cs_probe.gd",
+      extends: "Node",
+      className: "CsProbe",
+    });
+    const cases: [Record<string, unknown>, string][] = [
+      [{ ...base, className: "Other" }, "INVALID_ARGUMENT"],
+      [{ ...base, namespace: "A..B" }, "INVALID_VALUE"],
+      [{ ...base, namespace: "A.1B" }, "INVALID_VALUE"],
+      [{ ...base, namespace: "A;\nclass X {}" }, "INVALID_VALUE"],
+      [{ ...base, extends: "NoSuchClass" }, "INVALID_VALUE"],
+      // A GDScript class_name is not a C# base.
+      [{ ...base, extends: "CsProbe" }, "INVALID_VALUE"],
+      [{ ...base, path: "res://Not-An-Identifier.cs" }, "INVALID_PATH"],
+      [{ ...base, path: "res://1Bad.cs" }, "INVALID_PATH"],
+      [
+        { ...base, path: "res://addons/godot_mcp/Refused.cs" },
+        "PROTECTED_PATH",
+      ],
+      [
+        { path: "res://refused.gd", extends: "Node", namespace: "A" },
+        "INVALID_ARGUMENT",
+      ],
+    ];
+    for (const [args, code] of cases)
+      expect([args, await failure("create_script", args)]).toEqual([
+        args,
+        code,
+      ]);
+    expect(await Bun.file(join(editor.dir, "Refused.cs")).exists()).toBe(false);
+    expect(await Bun.file(join(editor.dir, "refused.gd")).exists()).toBe(false);
+  });
+
+  test("an existing .cs path is refused", async () => {
+    expect(
+      await failure("create_script", { path: "res://Foo.cs", extends: "Node" }),
+    ).toBe("FILE_EXISTS");
+  });
+
+  test("edit_script replaces text and a BOM survives, with no diagnostics", async () => {
+    await writeFile(
+      join(editor.dir, "Edited.cs"),
+      Buffer.concat([
+        Buffer.from([0xef, 0xbb, 0xbf]),
+        Buffer.from("public partial class Edited {\n  int a = 1;\n}\n"),
+      ]),
+    );
+    expect(
+      await ok("edit_script", {
+        path: "res://Edited.cs",
+        oldText: "a = 1",
+        newText: "a = 2 +",
+      }),
+    ).toEqual({ path: "res://Edited.cs", diagnostics: [], note: NOTE });
+    const bytes = await readFile(join(editor.dir, "Edited.cs"));
+    expect([...bytes.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    expect(bytes.subarray(3).toString()).toBe(
+      "public partial class Edited {\n  int a = 2 +;\n}\n",
+    );
+    expect(
+      await failure("edit_script", {
+        path: "res://Edited.cs",
+        oldText: "absent",
+        newText: "x",
+      }),
+    ).toBe("NO_MATCH");
+  });
+
+  test("validate_script stays .gd only", async () => {
+    expect(await failure("validate_script", { path: "res://Foo.cs" })).toBe(
+      "INVALID_PATH",
+    );
+  });
+});
+
 describe("edit_script", () => {
   const seed = async (name: string, text: string) => {
     await writeFile(join(editor.dir, name), text);

@@ -43,14 +43,15 @@ func tools() -> Array[Dictionary]:
 		},
 		{
 			"name": "create_script",
-			"description": "Create a .gd file from an optional `class_name` line, an `extends` line and `content` as the body, then return its diagnostics. A syntax error is still written and reported. Refuses an existing path (FILE_EXISTS), a missing directory and anything under addons/godot_mcp/. For @tool or other leading annotations, create the file and then replace it with edit_script `content`. Attach it with update_property `script`.",
+			"description": "Create a .gd or .cs file and return its diagnostics. A .gd file is an optional `class_name` line, an `extends` line and `content` as the body; a syntax error is still written and reported. A .cs file is `using Godot;`, an optional file-scoped `namespace`, and `public partial class <file name> : <extends>` with `content` as the class body; it returns no diagnostics, since build_dotnet finds C# errors, and it needs a build (build_dotnet) before update_property `script` accepts it. Refuses an existing path (FILE_EXISTS), a missing directory and anything under addons/godot_mcp/. For @tool or other leading annotations, create the file and then replace it with edit_script `content`. Attach it with update_property `script`.",
 			"inputSchema": {
 				"type": "object",
 				"properties": {
-					"path": {"type": "string", "description": "res:// path ending in .gd."},
-					"extends": {"type": "string", "description": "A built-in class such as Node2D, or a global class_name."},
-					"className": {"type": "string", "description": "Optional class_name."},
-					"content": {"type": "string", "description": "Script body placed after the extends line. Max 1 MB."},
+					"path": {"type": "string", "description": "res:// path ending in .gd or .cs. A .cs file name must be an identifier, because the class takes it."},
+					"extends": {"type": "string", "description": "A built-in class such as Node2D. A .gd script may also name a global class_name."},
+					"className": {"type": "string", "description": "Optional class_name. .gd only (INVALID_ARGUMENT for .cs)."},
+					"namespace": {"type": "string", "description": "Optional namespace such as Game.Actors. .cs only (INVALID_ARGUMENT for .gd)."},
+					"content": {"type": "string", "description": "Script body placed after the extends line, or inside the C# class braces. Max 1 MB."},
 				},
 				"required": ["path", "extends"],
 				"additionalProperties": false,
@@ -59,11 +60,11 @@ func tools() -> Array[Dictionary]:
 		},
 		{
 			"name": "edit_script",
-			"description": "Change a .gd file, then return its diagnostics. Give `oldText` and `newText` to replace one exact occurrence (NO_MATCH when absent, AMBIGUOUS_MATCH when repeated; line endings must match the file), or `content` to replace the whole file. Refuses a script with unsaved changes in the script editor (UNSAVED_EDITOR_BUFFER) and anything under addons/godot_mcp/. A syntax error is still written and reported. Open script editor tabs reload.",
+			"description": "Change a .gd or .cs file, then return its diagnostics (none for .cs, whose errors come from build_dotnet; a changed .cs script also needs a build before update_property `script` accepts it). Give `oldText` and `newText` to replace one exact occurrence (NO_MATCH when absent, AMBIGUOUS_MATCH when repeated; line endings must match the file), or `content` to replace the whole file. Refuses a script with unsaved changes in the script editor (UNSAVED_EDITOR_BUFFER) and anything under addons/godot_mcp/. A syntax error is still written and reported. Open script editor tabs reload.",
 			"inputSchema": {
 				"type": "object",
 				"properties": {
-					"path": {"type": "string", "description": "res:// path ending in .gd."},
+					"path": {"type": "string", "description": "res:// path ending in .gd or .cs."},
 					"oldText": {"type": "string", "description": "Non-empty text (max 64 KB) that occurs exactly once."},
 					"newText": {"type": "string", "description": "Its replacement."},
 					"content": {"type": "string", "description": "The new full file. Max 1 MB."},
@@ -102,10 +103,14 @@ func create_script(arguments: Dictionary, _request: Request) -> Variant:
 	var path: String = arguments["path"]
 	var problem := _protected(path)
 	if problem.is_empty():
-		problem = ResPaths.check_new_file(path, ["gd"])
+		problem = ResPaths.check_new_file(path, ["gd", "cs"])
 	if not problem.is_empty():
 		return problem
 	var base: String = arguments["extends"]
+	if _is_csharp(path):
+		return _create_csharp(path, base, arguments)
+	if arguments.has("namespace"):
+		return ToolError.fail("INVALID_ARGUMENT", "namespace applies only to .cs scripts")
 	if _IDENTIFIER.search(base) == null or not (ClassDB.class_exists(base) or _is_global_class(base)):
 		return ToolError.fail("INVALID_VALUE", "extends must name a built-in class or a global class_name: " + base)
 	var text := ""
@@ -121,6 +126,31 @@ func create_script(arguments: Dictionary, _request: Request) -> Variant:
 	return _write_and_diagnose(path, text, false, null)
 
 
+# The class is named after the file, as Godot requires. Only ClassDB classes can be the base: a C#
+# class deriving from another script's global class would also need that class's namespace.
+func _create_csharp(path: String, base: String, arguments: Dictionary) -> Variant:
+	if arguments.has("className"):
+		return ToolError.fail("INVALID_ARGUMENT", "className does not apply to .cs scripts; the class is named after the file")
+	var class_label := path.get_file().get_basename()
+	if _IDENTIFIER.search(class_label) == null:
+		return ToolError.fail("INVALID_PATH", "A .cs file name must be an identifier, because the class takes it: " + class_label)
+	if _IDENTIFIER.search(base) == null or not ClassDB.class_exists(base):
+		return ToolError.fail("INVALID_VALUE", "extends must name a built-in class for a .cs script: " + base)
+	var text := "using Godot;\n\n"
+	if arguments.has("namespace"):
+		var namespace_name: String = arguments["namespace"]
+		for segment in namespace_name.split(".", true):
+			if _IDENTIFIER.search(segment) == null:
+				return ToolError.fail("INVALID_VALUE", "namespace must be identifiers joined by dots: " + namespace_name)
+		text += "namespace %s;\n\n" % namespace_name
+	text += "public partial class %s : %s\n{\n" % [class_label, base]
+	var body: String = arguments.get("content", "")
+	if body != "":
+		text += body if body.ends_with("\n") else body + "\n"
+	text += "}\n"
+	return _write_and_diagnose(path, text, false, null)
+
+
 func edit_script(arguments: Dictionary, _request: Request) -> Variant:
 	var path: String = arguments["path"]
 	var whole := arguments.has("content")
@@ -129,7 +159,7 @@ func edit_script(arguments: Dictionary, _request: Request) -> Variant:
 		return ToolError.fail("INVALID_ARGUMENT", "give either content, or both oldText and newText")
 	var problem := _protected(path)
 	if problem.is_empty():
-		problem = ResPaths.check_file(path, ["gd"])
+		problem = ResPaths.check_file(path, ["gd", "cs"])
 	if not problem.is_empty():
 		return problem
 	if _unsaved_in_editor(path):
@@ -185,6 +215,9 @@ func _write_and_diagnose(path: String, text: String, bom: bool, original: Varian
 		return ToolError.fail("WRITE_FAILED", "Could not write %s (%s)%s" % [path, error_string(err), outcome])
 	EditorInterface.get_resource_filesystem().update_file(path)
 	EditorInterface.get_script_editor().reload_open_files()
+	if _is_csharp(path):
+		# The build compiles C#; loading the script would report nothing.
+		return {"path": path, "diagnostics": [], "note": "C# diagnostics come from build_dotnet"}
 	return {"path": path, "diagnostics": _diagnose(path)}
 
 
@@ -253,6 +286,10 @@ func _protected(path: String) -> Dictionary:
 
 func _unsaved_in_editor(path: String) -> bool:
 	return path in EditorInterface.get_script_editor().get_unsaved_files()
+
+
+func _is_csharp(path: String) -> bool:
+	return path.get_extension().to_lower() == "cs"
 
 
 func _is_global_class(name: String) -> bool:
