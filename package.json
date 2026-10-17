@@ -2,6 +2,12 @@
   "name": "godot-mcp",
   "version": "0.0.1",
   "private": true,
+  "description": "Godot 4.7 editor addon that serves the editor as an MCP server (the Bun server in src/ is a dev and conformance harness).",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/voidrot/godot-mcp.git"
+  },
   "type": "module",
   "scripts": {
     "check": "biome ci . && tsc --noEmit && bun test tests/unit tests/godot tests/editor tests/stdio.test.ts"
